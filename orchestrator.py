@@ -3,12 +3,16 @@ import json
 import sys  # Added for verbose flag
 import asyncio
 import traceback
+import uuid
 from typing import Any, Dict, List, Optional
 import google.generativeai as genai
 import google.generativeai.protos as protos
 from dotenv import load_dotenv
 from pathlib import Path
 import importlib.util
+
+# Import intelligence components for smart agents
+from connectors.agent_intelligence import WorkspaceKnowledge, SharedContext
 
 load_dotenv()
 
@@ -39,6 +43,14 @@ class OrchestratorAgent:
         self.sub_agents: Dict[str, Any] = {}
         self.agent_capabilities: Dict[str, List[str]] = {}
         self.verbose = verbose  # Set to True for detailed logging
+
+        # Intelligence components for smart cross-agent coordination
+        self.knowledge_base = WorkspaceKnowledge()
+        self.session_id = str(uuid.uuid4())
+        self.shared_context = SharedContext(self.session_id)
+
+        if self.verbose:
+            print(f"{C.CYAN}🧠 Intelligence enabled: Session {self.session_id[:8]}...{C.ENDC}")
         
         self.system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
 
@@ -65,6 +77,9 @@ When delegating to an agent:
 - **Pass relevant context**: If information from a previous step is needed, explicitly include it in the context parameter
 - **Set clear expectations**: Tell the agent exactly what output format or specific actions you need
 - **Handle errors gracefully**: If an agent reports an error, try alternative approaches or gather missing information
+- **Trust final agent status**: Agents may encounter errors and successfully retry. Focus on the agent's final result, not interim errors during execution.
+- **"✓ agent completed successfully" means SUCCESS**: If you see this message, the agent accomplished the task even if there were errors during execution. Parse the agent's response for created resources (like "Created KAN-20" or "issue KAN-18").
+- **Error recovery is normal**: Agents are designed to handle errors intelligently through retry logic. Don't interpret retry attempts or interim errors as failures if the agent ultimately succeeds.
 
 # Task Execution Patterns
 
@@ -178,12 +193,21 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             
             agent_class = module.Agent
 
-            # Try to initialize with verbose flag if the agent supports it
+            # Try to initialize with intelligence components (smart agents) or just verbose (legacy agents)
             try:
-                agent_instance = agent_class(verbose=self.verbose)
+                # Try with full intelligence support
+                agent_instance = agent_class(
+                    verbose=self.verbose,
+                    shared_context=self.shared_context,
+                    knowledge_base=self.knowledge_base
+                )
             except TypeError:
-                # Agent doesn't support verbose parameter
-                agent_instance = agent_class()
+                # Fallback: Try with just verbose
+                try:
+                    agent_instance = agent_class(verbose=self.verbose)
+                except TypeError:
+                    # Fallback: No parameters (legacy agent)
+                    agent_instance = agent_class()
 
             # Set verbose as an attribute for agents that support it
             if hasattr(agent_instance, 'verbose'):
@@ -353,9 +377,9 @@ Provide a clear instruction describing what you want to accomplish.""",
             
             # Create model with agent tools
             agent_tools = self._create_agent_tools()
-            
+
             self.model = genai.GenerativeModel(
-                'models/gemini-2.5-pro',
+                'models/gemini-2.5-flash',
                 system_instruction=self.system_prompt,
                 tools=agent_tools
             )

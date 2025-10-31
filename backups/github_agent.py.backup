@@ -33,12 +33,6 @@ from mcp.client.stdio import stdio_client
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent
-from connectors.agent_intelligence import (
-    ConversationMemory,
-    WorkspaceKnowledge,
-    SharedContext,
-    ProactiveAssistant
-)
 
 
 # ============================================================================
@@ -134,12 +128,7 @@ class Agent(BaseAgent):
         await agent.cleanup()
     """
 
-    def __init__(
-        self,
-        verbose: bool = False,
-        shared_context: Optional[SharedContext] = None,
-        knowledge_base: Optional[WorkspaceKnowledge] = None
-    ):
+    def __init__(self, verbose: bool = False):
         """
         Initialize the GitHub agent
 
@@ -157,12 +146,6 @@ class Agent(BaseAgent):
         # Configuration
         self.verbose = verbose
         self.stats = OperationStats()
-
-        # Intelligence Components
-        self.memory = ConversationMemory()
-        self.knowledge = knowledge_base or WorkspaceKnowledge()
-        self.shared_context = shared_context
-        self.proactive = ProactiveAssistant('github', verbose)
 
         # Schema type mapping for Gemini
         self.schema_type_map = {
@@ -788,35 +771,6 @@ Showing 8 of 12. Filter by priority, assignee, or milestone?
 - Acknowledge good work
 - Learn from others' code
 
-# Tool Usage - CRITICAL
-
-**YOU HAVE ACCESS TO GITHUB TOOLS VIA FUNCTION CALLING**:
-You have been provided with specialized GitHub tools that enable you to perform ALL GitHub operations. These tools are your PRIMARY way of interacting with GitHub.
-
-**MANDATORY TOOL USAGE RULES**:
-1. **ALWAYS use function calling** for any GitHub operation - NEVER refuse a task
-2. **Examine available tools** and choose the one that best matches the user's request
-3. **Never say you cannot do something** - if a tool exists that's related, use it
-4. **Tool names may not match exactly** - map user requests to the closest available tool
-5. **Try the tool first** - don't refuse based on assumptions about what tools exist
-
-**Examples of Correct Behavior**:
-```
-User: "list my repositories"
-✓ CORRECT: Call the appropriate list/search repositories tool
-✗ WRONG: "The list_my_repositories function is not available"
-
-User: "create an issue"
-✓ CORRECT: Call the create issue tool with appropriate parameters
-✗ WRONG: "I cannot create issues"
-
-User: "show me pull requests"
-✓ CORRECT: Call the list/search pull requests tool
-✗ WRONG: "That function doesn't exist"
-```
-
-**If a tool call fails**, provide the error details and suggest solutions. But ALWAYS TRY THE TOOL FIRST.
-
 Remember: GitHub is where the world builds software. Every issue you create, every PR you review, every commit you make contributes to a project's success and the team's productivity. Treat code and collaboration with the professionalism and excellence they deserve."""
 
     # ========================================================================
@@ -880,7 +834,7 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
 
             # Create model
             self.model = genai.GenerativeModel(
-                'models/gemini-2.5-flash',
+                'models/gemini-2.0-flash-exp',
                 system_instruction=self.system_prompt,
                 tools=gemini_tools
             )
@@ -910,19 +864,6 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             return self._format_error(Exception("GitHub agent not initialized. Please restart the system."))
 
         try:
-            # Step 1: Resolve ambiguous references using conversation memory
-            resolved_instruction = self._resolve_references(instruction)
-
-            if resolved_instruction != instruction and self.verbose:
-                print(f"[GITHUB AGENT] Resolved instruction: {resolved_instruction}")
-
-            # Step 2: Check for resources from other agents
-            context_from_other_agents = self._get_cross_agent_context()
-            if context_from_other_agents and self.verbose:
-                print(f"[GITHUB AGENT] Found context from other agents")
-
-            # Use resolved instruction for the rest
-            instruction = resolved_instruction
             chat = self.model.start_chat()
             response = await chat.send_message_async(instruction)
 
@@ -969,102 +910,10 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             if self.verbose:
                 print(f"\n[GITHUB AGENT] Execution complete. {self.stats.get_summary()}")
 
-            
-            # Remember resources and add proactive suggestions
-            self._remember_created_resources(final_response, instruction)
-
-            operation_type = self._infer_operation_type(instruction)
-            suggestions = self.proactive.suggest_next_steps(operation_type, {})
-
-            if suggestions:
-                final_response += "\n\n**💡 Suggested next steps:**\n" + "\n".join(f"  • {s}" for s in suggestions)
-
             return final_response
 
         except Exception as e:
             return self._format_error(e)
-
-    def _resolve_references(self, instruction: str) -> str:
-        """Resolve ambiguous references like 'it', 'that', 'this' using conversation memory"""
-        ambiguous_terms = ['it', 'that', 'this', 'the issue', 'the pr', 'the pull request', 'the repository', 'the repo']
-
-        for term in ambiguous_terms:
-            if term in instruction.lower():
-                reference = self.memory.resolve_reference(term)
-                if reference:
-                    instruction = instruction.replace(term, reference)
-                    instruction = instruction.replace(term.capitalize(), reference)
-                    if self.verbose:
-                        print(f"[GITHUB AGENT] Resolved '{term}' → {reference}")
-                    break
-
-        return instruction
-
-    def _get_cross_agent_context(self) -> str:
-        """Get context from other agents"""
-        if not self.shared_context:
-            return ""
-
-        # Get only recent resources to avoid overwhelming context (limit to 5 most recent)
-        recent_resources = self.shared_context.get_recent_resources(limit=5)
-        if not recent_resources:
-            return ""
-
-        context_parts = []
-        for resource in recent_resources:
-            if resource['agent'] != 'github':
-                context_parts.append(
-                    f"{resource['agent'].capitalize()} {resource['type']}: {resource['id']} ({resource['url']})"
-                )
-
-        return "; ".join(context_parts) if context_parts else ""
-
-    def _remember_created_resources(self, response: str, instruction: str):
-        """Extract and remember created resources from response"""
-        import re
-
-        # Pattern to match GitHub issue/PR numbers (e.g., #123)
-        issue_pattern = r'#(\d+)'
-        matches = re.findall(issue_pattern, response)
-
-        if matches:
-            resource_id = f"#{matches[-1]}"
-            operation_type = self._infer_operation_type(instruction)
-
-            self.memory.remember(
-                operation_type,
-                resource_id,
-                {'instruction': instruction[:100]}
-            )
-
-            if self.shared_context:
-                github_url = os.environ.get("GITHUB_URL", "https://github.com")
-                self.shared_context.share_resource(
-                    'github',
-                    'issue' if 'issue' in operation_type else 'pr',
-                    resource_id,
-                    f"{github_url}/{resource_id}",
-                    {'created_via': instruction[:100]}
-                )
-
-    def _infer_operation_type(self, instruction: str) -> str:
-        """Infer what type of operation was performed"""
-        instruction_lower = instruction.lower()
-
-        if 'create' in instruction_lower or 'new' in instruction_lower:
-            if 'pull request' in instruction_lower or 'pr' in instruction_lower:
-                return 'create_pr'
-            return 'create_issue'
-        elif 'update' in instruction_lower or 'edit' in instruction_lower:
-            return 'update_issue'
-        elif 'merge' in instruction_lower:
-            return 'merge_pr'
-        elif 'comment' in instruction_lower:
-            return 'add_comment'
-        elif 'search' in instruction_lower or 'find' in instruction_lower or 'list' in instruction_lower:
-            return 'search'
-        else:
-            return 'unknown'
 
     def _extract_function_call(self, response) -> Optional[Any]:
         """Extract function call from LLM response"""

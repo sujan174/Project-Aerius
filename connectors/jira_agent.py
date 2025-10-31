@@ -34,6 +34,12 @@ from mcp.client.stdio import stdio_client
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent
+from connectors.agent_intelligence import (
+    ConversationMemory,
+    WorkspaceKnowledge,
+    SharedContext,
+    ProactiveAssistant
+)
 
 
 # ============================================================================
@@ -78,6 +84,7 @@ class OperationStats:
     successful_operations: int = 0
     failed_operations: int = 0
     retries: int = 0
+    suggestions_offered: int = 0
     tools_called: Dict[str, int] = field(default_factory=dict)
 
     def record_operation(self, tool_name: str, success: bool, retry_count: int = 0):
@@ -125,12 +132,19 @@ class Agent(BaseAgent):
         await agent.cleanup()
     """
 
-    def __init__(self, verbose: bool = False):
+    def __init__(
+        self,
+        verbose: bool = False,
+        shared_context: Optional[SharedContext] = None,
+        knowledge_base: Optional[WorkspaceKnowledge] = None
+    ):
         """
         Initialize the Jira agent
 
         Args:
             verbose: Enable detailed logging for debugging (default: False)
+            shared_context: Shared context for cross-agent coordination (optional)
+            knowledge_base: Workspace knowledge base for learning (optional)
         """
         super().__init__()
 
@@ -143,6 +157,12 @@ class Agent(BaseAgent):
         # Configuration
         self.verbose = verbose
         self.stats = OperationStats()
+
+        # Intelligence Components
+        self.memory = ConversationMemory()
+        self.knowledge = knowledge_base or WorkspaceKnowledge()
+        self.shared_context = shared_context
+        self.proactive = ProactiveAssistant('jira', verbose)
 
         # Schema type mapping for Gemini
         self.schema_type_map = {
@@ -280,11 +300,37 @@ Error: "Specify a valid issue type" for "Bug" in project "KAN"
 - **Inform users of what you learned** - "Project is 'KAN' not 'KAn'" helps them understand
 - **Complete the task** - if user wanted a bug created, create it as Task if Bug doesn't exist
 
+**CRITICAL: Response Formatting After Successful Recovery**:
+When you encounter an error but then successfully recover and complete the task:
+- **YOUR FINAL RESPONSE MUST FOCUS ON THE SUCCESS, NOT THE ERROR**
+- Lead with what you accomplished: "✓ Created issue KAN-18: 'buffer overflow issue' with High priority"
+- Optionally mention the recovery: "(Note: Created as Task since Bug type is not available in this project)"
+- **NEVER say the operation failed if your retry succeeded** - always check your most recent tool call results
+
+Example CORRECT final response after error recovery:
+```
+✓ Created issue KAN-18: "buffer overflow issue" with High priority
+
+Summary: buffer overflow issue
+Type: Task (Bug type not available in KAN project)
+Priority: High
+Status: To Do
+
+Link: https://your-domain.atlassian.net/browse/KAN-18
+```
+
+Example WRONG final response (DO NOT DO THIS):
+```
+I wasn't able to create the issue. There was an error with the issue type.
+```
+^^ This is WRONG even if you successfully created it after retrying!
+
 **YOU MUST NEVER**:
 - Give up after one "valid project" or "valid issue type" error
 - Ask user for information you can discover yourself (project keys, issue types)
 - Fail silently without attempting recovery
 - Report failure without explaining what went wrong AND what you tried
+- **Report failure when your retry actually succeeded** - always verify your final tool call result!
 
 # CRITICAL: Mandatory Verification Protocol
 
@@ -547,10 +593,13 @@ Remember: You're not just executing commands—you're helping users manage their
         Execute a Jira task with enhanced error handling and verification
 
         This is the main entry point for task execution. It handles:
+        - Conversation memory and context resolution
         - LLM-based instruction interpretation
         - Tool calling loop with retry logic
         - Result validation and verification
         - Comprehensive error handling
+        - Proactive suggestions
+        - Cross-agent resource sharing
 
         Args:
             instruction: Natural language instruction for the agent
@@ -562,9 +611,25 @@ Remember: You're not just executing commands—you're helping users manage their
             return self._format_error(Exception("Jira agent not initialized. Please restart the system."))
 
         try:
-            # Start conversation with LLM
+            # Step 1: Resolve ambiguous references using conversation memory
+            resolved_instruction = self._resolve_references(instruction)
+
+            if resolved_instruction != instruction and self.verbose:
+                print(f"[JIRA AGENT] Resolved instruction: {resolved_instruction}")
+
+            # Step 2: Check for resources from other agents
+            context_from_other_agents = self._get_cross_agent_context()
+            if context_from_other_agents and self.verbose:
+                print(f"[JIRA AGENT] Found context from other agents: {len(context_from_other_agents)} resources")
+
+            # Step 3: Start conversation with LLM
             chat = self.model.start_chat()
-            response = await chat.send_message_async(instruction)
+
+            # Enhance instruction with cross-agent context if available
+            if context_from_other_agents:
+                resolved_instruction += f"\n\n[Additional context from other agents: {context_from_other_agents}]"
+
+            response = await chat.send_message_async(resolved_instruction)
 
             # Handle function calling loop with retry logic
             max_iterations = 15  # Increased for verification steps
@@ -609,8 +674,18 @@ Remember: You're not just executing commands—you're helping users manage their
                     "Consider breaking this into smaller requests."
                 )
 
-            # Return final response
+            # Step 4: Extract and remember created resources
             final_response = response.text
+            self._remember_created_resources(final_response, resolved_instruction)
+
+            # Step 5: Add proactive suggestions
+            operation_type = self._infer_operation_type(resolved_instruction)
+            context = {'instruction': resolved_instruction, 'response': final_response}
+            suggestions = self.proactive.suggest_next_steps(operation_type, context)
+
+            if suggestions:
+                self.stats.suggestions_offered += 1
+                final_response += "\n\n**💡 Suggested next steps:**\n" + "\n".join(f"  • {s}" for s in suggestions)
 
             if self.verbose:
                 print(f"\n[JIRA AGENT] Execution complete. {self.stats.get_summary()}")
@@ -619,6 +694,133 @@ Remember: You're not just executing commands—you're helping users manage their
 
         except Exception as e:
             return self._format_error(e)
+
+    # ========================================================================
+    # INTELLIGENCE HELPER METHODS
+    # ========================================================================
+
+    def _resolve_references(self, instruction: str) -> str:
+        """
+        Resolve ambiguous references like 'it', 'that', 'this' using conversation memory
+
+        Args:
+            instruction: Original instruction
+
+        Returns:
+            Instruction with references resolved
+        """
+        # Check for common ambiguous terms
+        ambiguous_terms = ['it', 'that', 'this', 'the issue', 'the ticket']
+
+        for term in ambiguous_terms:
+            if term in instruction.lower():
+                # Try to resolve from conversation memory
+                reference = self.memory.resolve_reference(term)
+                if reference:
+                    # Replace term with actual reference
+                    instruction = instruction.replace(term, reference)
+                    instruction = instruction.replace(term.capitalize(), reference)
+                    if self.verbose:
+                        print(f"[JIRA AGENT] Resolved '{term}' → {reference}")
+                    break
+
+        return instruction
+
+    def _get_cross_agent_context(self) -> str:
+        """
+        Get context from other agents (GitHub issues, etc.)
+
+        Returns:
+            Formatted context string
+        """
+        if not self.shared_context:
+            return ""
+
+        # Get only recent resources to avoid overwhelming context (limit to 5 most recent)
+        recent_resources = self.shared_context.get_recent_resources(limit=5)
+
+        if not recent_resources:
+            return ""
+
+        # Format context for LLM
+        context_parts = []
+        for resource in recent_resources:
+            if resource['agent'] != 'jira':  # Only include other agents
+                context_parts.append(
+                    f"{resource['agent'].capitalize()} {resource['type']}: {resource['id']} ({resource['url']})"
+                )
+
+        return "; ".join(context_parts) if context_parts else ""
+
+    def _remember_created_resources(self, response: str, instruction: str):
+        """
+        Extract and remember created resources from response
+
+        Args:
+            response: LLM response text
+            instruction: Original instruction
+        """
+        import re
+
+        # Pattern to match Jira issue keys (e.g., KAN-123, PROJ-456)
+        issue_pattern = r'\b([A-Z][A-Z0-9]+-\d+)\b'
+        matches = re.findall(issue_pattern, response)
+
+        if matches:
+            # Remember the most recently mentioned issue
+            issue_key = matches[-1]  # Last mentioned is likely the one created/modified
+
+            # Determine operation type
+            operation_type = 'create_issue' if 'creat' in instruction.lower() else 'update_issue'
+
+            # Remember in conversation memory
+            self.memory.remember(
+                operation_type,
+                issue_key,
+                {'instruction': instruction[:100]}
+            )
+
+            # Share with other agents if shared context available
+            if self.shared_context:
+                # Extract Jira URL from environment
+                jira_url = os.environ.get('JIRA_URL', 'https://your-domain.atlassian.net')
+                issue_url = f"{jira_url}/browse/{issue_key}"
+
+                self.shared_context.share_resource(
+                    'jira',
+                    'ticket',
+                    issue_key,
+                    issue_url,
+                    {'created_by': 'jira_agent'}
+                )
+
+                if self.verbose:
+                    print(f"[JIRA AGENT] Shared {issue_key} with other agents")
+
+    def _infer_operation_type(self, instruction: str) -> str:
+        """
+        Infer what type of operation was performed
+
+        Args:
+            instruction: The instruction that was executed
+
+        Returns:
+            Operation type string
+        """
+        instruction_lower = instruction.lower()
+
+        if 'create' in instruction_lower or 'new' in instruction_lower:
+            return 'create_issue'
+        elif 'update' in instruction_lower or 'edit' in instruction_lower or 'change' in instruction_lower:
+            return 'update_issue'
+        elif 'transition' in instruction_lower or 'mark' in instruction_lower or 'move' in instruction_lower:
+            return 'transition_issue'
+        elif 'comment' in instruction_lower:
+            return 'add_comment'
+        elif 'search' in instruction_lower or 'find' in instruction_lower or 'list' in instruction_lower:
+            return 'search'
+        else:
+            return 'unknown'
 
     def _extract_function_call(self, response) -> Optional[Any]:
         """

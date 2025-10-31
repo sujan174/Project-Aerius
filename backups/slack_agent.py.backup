@@ -33,12 +33,6 @@ from mcp.client.stdio import stdio_client
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent
-from connectors.agent_intelligence import (
-    ConversationMemory,
-    WorkspaceKnowledge,
-    SharedContext,
-    ProactiveAssistant
-)
 
 
 # ============================================================================
@@ -134,12 +128,7 @@ class Agent(BaseAgent):
         await agent.cleanup()
     """
 
-    def __init__(
-        self,
-        verbose: bool = False,
-        shared_context: Optional[SharedContext] = None,
-        knowledge_base: Optional[WorkspaceKnowledge] = None
-    ):
+    def __init__(self, verbose: bool = False):
         """
         Initialize the Slack agent
 
@@ -157,12 +146,6 @@ class Agent(BaseAgent):
         # Configuration
         self.verbose = verbose
         self.stats = OperationStats()
-
-        # Intelligence Components
-        self.memory = ConversationMemory()
-        self.knowledge = knowledge_base or WorkspaceKnowledge()
-        self.shared_context = shared_context
-        self.proactive = ProactiveAssistant('slack', verbose)
 
         # Schema type mapping for Gemini
         self.schema_type_map = {
@@ -803,19 +786,6 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
             return self._format_error(Exception("Slack agent not initialized. Please restart the system."))
 
         try:
-            # Step 1: Resolve ambiguous references using conversation memory
-            resolved_instruction = self._resolve_references(instruction)
-
-            if resolved_instruction != instruction and self.verbose:
-                print(f"[SLACK AGENT] Resolved instruction: {resolved_instruction}")
-
-            # Step 2: Check for resources from other agents
-            context_from_other_agents = self._get_cross_agent_context()
-            if context_from_other_agents and self.verbose:
-                print(f"[SLACK AGENT] Found context from other agents")
-
-            # Use resolved instruction for the rest
-            instruction = resolved_instruction
             chat = self.model.start_chat()
             response = await chat.send_message_async(instruction)
 
@@ -862,97 +832,10 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
             if self.verbose:
                 print(f"\n[SLACK AGENT] Execution complete. {self.stats.get_summary()}")
 
-            
-            # Remember resources and add proactive suggestions
-            self._remember_created_resources(final_response, instruction)
-
-            operation_type = self._infer_operation_type(instruction)
-            suggestions = self.proactive.suggest_next_steps(operation_type, {})
-
-            if suggestions:
-                final_response += "\n\n**💡 Suggested next steps:**\n" + "\n".join(f"  • {s}" for s in suggestions)
-
             return final_response
 
         except Exception as e:
             return self._format_error(e)
-
-    def _resolve_references(self, instruction: str) -> str:
-        """Resolve ambiguous references like 'it', 'that', 'this' using conversation memory"""
-        ambiguous_terms = ['it', 'that', 'this', 'the channel', 'the message', 'the thread']
-
-        for term in ambiguous_terms:
-            if term in instruction.lower():
-                reference = self.memory.resolve_reference(term)
-                if reference:
-                    instruction = instruction.replace(term, reference)
-                    instruction = instruction.replace(term.capitalize(), reference)
-                    if self.verbose:
-                        print(f"[SLACK AGENT] Resolved '{term}' → {reference}")
-                    break
-
-        return instruction
-
-    def _get_cross_agent_context(self) -> str:
-        """Get context from other agents"""
-        if not self.shared_context:
-            return ""
-
-        # Get only recent resources to avoid overwhelming context (limit to 5 most recent)
-        recent_resources = self.shared_context.get_recent_resources(limit=5)
-        if not recent_resources:
-            return ""
-
-        context_parts = []
-        for resource in recent_resources:
-            if resource['agent'] != 'slack':
-                context_parts.append(
-                    f"{resource['agent'].capitalize()} {resource['type']}: {resource['id']} ({resource['url']})"
-                )
-
-        return "; ".join(context_parts) if context_parts else ""
-
-    def _remember_created_resources(self, response: str, instruction: str):
-        """Extract and remember created resources from response"""
-        import re
-
-        # Pattern to match Slack channel names or message timestamps
-        channel_pattern = r'#([a-z0-9-]+)'
-        matches = re.findall(channel_pattern, response)
-
-        if matches:
-            resource_id = f"#{matches[-1]}"
-            operation_type = self._infer_operation_type(instruction)
-
-            self.memory.remember(
-                operation_type,
-                resource_id,
-                {'instruction': instruction[:100]}
-            )
-
-            if self.shared_context:
-                self.shared_context.share_resource(
-                    'slack',
-                    'message',
-                    resource_id,
-                    f"https://slack.com/app_redirect?channel={matches[-1]}",
-                    {'created_via': instruction[:100]}
-                )
-
-    def _infer_operation_type(self, instruction: str) -> str:
-        """Infer what type of operation was performed"""
-        instruction_lower = instruction.lower()
-
-        if 'post' in instruction_lower or 'send' in instruction_lower or 'message' in instruction_lower:
-            return 'send_message'
-        elif 'reply' in instruction_lower or 'thread' in instruction_lower:
-            return 'reply_thread'
-        elif 'react' in instruction_lower or 'emoji' in instruction_lower:
-            return 'add_reaction'
-        elif 'search' in instruction_lower or 'find' in instruction_lower or 'list' in instruction_lower:
-            return 'search'
-        else:
-            return 'unknown'
 
     def _extract_function_call(self, response) -> Optional[Any]:
         """Extract function call from LLM response"""

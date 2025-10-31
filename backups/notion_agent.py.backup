@@ -33,12 +33,6 @@ from mcp.client.stdio import stdio_client
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent
-from connectors.agent_intelligence import (
-    ConversationMemory,
-    WorkspaceKnowledge,
-    SharedContext,
-    ProactiveAssistant
-)
 
 
 # ============================================================================
@@ -133,12 +127,7 @@ class Agent(BaseAgent):
         await agent.cleanup()
     """
 
-    def __init__(
-        self,
-        verbose: bool = False,
-        shared_context: Optional[SharedContext] = None,
-        knowledge_base: Optional[WorkspaceKnowledge] = None
-    ):
+    def __init__(self, verbose: bool = False):
         """
         Initialize the Notion agent
 
@@ -156,12 +145,6 @@ class Agent(BaseAgent):
         # Configuration
         self.verbose = verbose
         self.stats = OperationStats()
-
-        # Intelligence Components
-        self.memory = ConversationMemory()
-        self.knowledge = knowledge_base or WorkspaceKnowledge()
-        self.shared_context = shared_context
-        self.proactive = ProactiveAssistant('notion', verbose)
 
         # Schema type mapping for Gemini
         self.schema_type_map = {
@@ -536,35 +519,6 @@ URL: [Notion URL]
 7. **Provide URLs**: Always include Notion URLs for created/found pages
 8. **Think hierarchically**: Content lives in context, not isolation
 
-# Tool Usage - CRITICAL
-
-**YOU HAVE ACCESS TO NOTION TOOLS VIA FUNCTION CALLING**:
-You have been provided with specialized Notion tools that enable you to perform ALL Notion operations. These tools are your PRIMARY way of interacting with Notion.
-
-**MANDATORY TOOL USAGE RULES**:
-1. **ALWAYS use function calling** for any Notion operation - NEVER refuse a task
-2. **Examine available tools** and choose the one that best matches the user's request
-3. **Never say you cannot do something** - if a tool exists that's related, use it
-4. **Tool names may not match exactly** - map user requests to the closest available tool
-5. **Try the tool first** - don't refuse based on assumptions about what tools exist
-
-**Examples of Correct Behavior**:
-```
-User: "list my notion pages"
-✓ CORRECT: Call the appropriate search/list pages tool
-✗ WRONG: "The list_pages function is not available"
-
-User: "create a page"
-✓ CORRECT: Call the create page tool with appropriate parameters
-✗ WRONG: "I cannot create pages"
-
-User: "show me databases"
-✓ CORRECT: Call the search tool with appropriate filters
-✗ WRONG: "That function doesn't exist"
-```
-
-**If a tool call fails**, provide the error details and suggest solutions. But ALWAYS TRY THE TOOL FIRST.
-
 Remember: You're not just executing commands—you're helping users build a powerful second brain. Every page you create, every structure you organize, every search you perform should make their workspace more valuable and their thinking clearer. Notion is where knowledge lives and grows; treat it with the care and intelligence it deserves."""
 
     # ========================================================================
@@ -616,7 +570,7 @@ Remember: You're not just executing commands—you're helping users build a powe
 
             # Create model
             self.model = genai.GenerativeModel(
-                'models/gemini-2.5-flash',
+                'models/gemini-2.0-flash-exp',
                 system_instruction=self.system_prompt,
                 tools=gemini_tools
             )
@@ -646,19 +600,6 @@ Remember: You're not just executing commands—you're helping users build a powe
             return self._format_error(Exception("Notion agent not initialized. Please restart the system."))
 
         try:
-            # Step 1: Resolve ambiguous references using conversation memory
-            resolved_instruction = self._resolve_references(instruction)
-
-            if resolved_instruction != instruction and self.verbose:
-                print(f"[NOTION AGENT] Resolved instruction: {resolved_instruction}")
-
-            # Step 2: Check for resources from other agents
-            context_from_other_agents = self._get_cross_agent_context()
-            if context_from_other_agents and self.verbose:
-                print(f"[NOTION AGENT] Found context from other agents")
-
-            # Use resolved instruction for the rest
-            instruction = resolved_instruction
             chat = self.model.start_chat()
             response = await chat.send_message_async(instruction)
 
@@ -705,99 +646,10 @@ Remember: You're not just executing commands—you're helping users build a powe
             if self.verbose:
                 print(f"\n[NOTION AGENT] Execution complete. {self.stats.get_summary()}")
 
-            
-            # Remember resources and add proactive suggestions
-            self._remember_created_resources(final_response, instruction)
-
-            operation_type = self._infer_operation_type(instruction)
-            suggestions = self.proactive.suggest_next_steps(operation_type, {})
-
-            if suggestions:
-                final_response += "\n\n**💡 Suggested next steps:**\n" + "\n".join(f"  • {s}" for s in suggestions)
-
             return final_response
 
         except Exception as e:
             return self._format_error(e)
-
-    def _resolve_references(self, instruction: str) -> str:
-        """Resolve ambiguous references like 'it', 'that', 'this' using conversation memory"""
-        ambiguous_terms = ['it', 'that', 'this', 'the page', 'the database', 'the entry']
-
-        for term in ambiguous_terms:
-            if term in instruction.lower():
-                reference = self.memory.resolve_reference(term)
-                if reference:
-                    instruction = instruction.replace(term, reference)
-                    instruction = instruction.replace(term.capitalize(), reference)
-                    if self.verbose:
-                        print(f"[NOTION AGENT] Resolved '{term}' → {reference}")
-                    break
-
-        return instruction
-
-    def _get_cross_agent_context(self) -> str:
-        """Get context from other agents"""
-        if not self.shared_context:
-            return ""
-
-        # Get only recent resources to avoid overwhelming context (limit to 5 most recent)
-        recent_resources = self.shared_context.get_recent_resources(limit=5)
-        if not recent_resources:
-            return ""
-
-        context_parts = []
-        for resource in recent_resources:
-            if resource['agent'] != 'notion':
-                context_parts.append(
-                    f"{resource['agent'].capitalize()} {resource['type']}: {resource['id']} ({resource['url']})"
-                )
-
-        return "; ".join(context_parts) if context_parts else ""
-
-    def _remember_created_resources(self, response: str, instruction: str):
-        """Extract and remember created resources from response"""
-        import re
-
-        # Pattern to match Notion page URLs or IDs
-        page_pattern = r'notion\.so/([a-f0-9]{32})'
-        matches = re.findall(page_pattern, response)
-
-        if matches:
-            page_id = matches[-1]
-            operation_type = self._infer_operation_type(instruction)
-
-            self.memory.remember(
-                operation_type,
-                page_id,
-                {'instruction': instruction[:100]}
-            )
-
-            if self.shared_context:
-                self.shared_context.share_resource(
-                    'notion',
-                    'page',
-                    page_id,
-                    f"https://notion.so/{page_id}",
-                    {'created_via': instruction[:100]}
-                )
-
-    def _infer_operation_type(self, instruction: str) -> str:
-        """Infer what type of operation was performed"""
-        instruction_lower = instruction.lower()
-
-        if 'create' in instruction_lower or 'new' in instruction_lower:
-            if 'database' in instruction_lower:
-                return 'create_database'
-            return 'create_page'
-        elif 'update' in instruction_lower or 'edit' in instruction_lower:
-            return 'update_page'
-        elif 'add' in instruction_lower and 'content' in instruction_lower:
-            return 'add_content'
-        elif 'search' in instruction_lower or 'find' in instruction_lower or 'list' in instruction_lower:
-            return 'search'
-        else:
-            return 'unknown'
 
     def _extract_function_call(self, response) -> Optional[Any]:
         """Extract function call from LLM response"""
