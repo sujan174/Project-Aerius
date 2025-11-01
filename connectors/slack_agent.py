@@ -164,6 +164,9 @@ class Agent(BaseAgent):
         self.shared_context = shared_context
         self.proactive = ProactiveAssistant('slack', verbose)
 
+        # Feature #1: Metadata Cache for faster operations
+        self.metadata_cache = {}
+
         # Schema type mapping for Gemini
         self.schema_type_map = {
             "string": protos.Type.STRING,
@@ -724,6 +727,9 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
 
             self.initialized = True
 
+            # Feature #1: Prefetch workspace metadata for faster operations
+            await self._prefetch_metadata()
+
             if self.verbose:
                 print(f"[SLACK AGENT] Initialization complete. {len(self.available_tools)} tools available.")
 
@@ -792,6 +798,125 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
             system_instruction=self.system_prompt,
             tools=gemini_tools
         )
+
+    async def _prefetch_metadata(self):
+        """
+        Prefetch and cache Slack workspace metadata for faster operations (Feature #1)
+
+        Fetches channels, users, and workspace info at initialization time
+        to avoid discovery overhead on every operation.
+
+        Cache is persisted to knowledge base with a 1-hour TTL.
+        """
+        try:
+            # Check if we have valid cached metadata
+            cached = self.knowledge.get_metadata_cache('slack')
+            if cached:
+                self.metadata_cache = cached
+                if self.verbose:
+                    print(f"[SLACK AGENT] Loaded metadata from cache ({len(cached.get('channels', {}))} channels, {len(cached.get('users', {}))} users)")
+                return
+
+            if self.verbose:
+                print(f"[SLACK AGENT] Prefetching metadata...")
+
+            # Fetch all channels (public + user's private)
+            channels = await self._fetch_all_channels()
+
+            # Fetch all users (limit to active users to avoid huge lists)
+            users = await self._fetch_all_users()
+
+            # Store in cache
+            self.metadata_cache = {
+                'channels': channels,
+                'users': users,
+                'fetched_at': asyncio.get_event_loop().time()
+            }
+
+            # Persist to knowledge base
+            self.knowledge.save_metadata_cache('slack', self.metadata_cache, ttl_seconds=3600)
+
+            if self.verbose:
+                print(f"[SLACK AGENT] Cached metadata: {len(channels)} channels, {len(users)} users")
+
+        except Exception as e:
+            # Graceful degradation: If prefetch fails, continue without cache
+            if self.verbose:
+                print(f"[SLACK AGENT] Warning: Metadata prefetch failed: {e}")
+            print(f"[SLACK AGENT] Continuing without metadata cache (operations may be slower)")
+
+    async def _fetch_all_channels(self) -> Dict:
+        """Fetch all accessible channels"""
+        try:
+            # Use Slack MCP tool to list channels
+            result = await self.session.call_tool("slack_list_channels", {})
+
+            channels = {}
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "{}"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, dict) and 'channels' in data:
+                    for ch in data['channels']:
+                        channel_id = ch.get('id', '')
+                        channels[channel_id] = {
+                            'id': channel_id,
+                            'name': ch.get('name', ''),
+                            'is_private': ch.get('is_private', False),
+                            'is_archived': ch.get('is_archived', False),
+                            'num_members': ch.get('num_members', 0)
+                        }
+                elif isinstance(data, list):
+                    for ch in data:
+                        channel_id = ch.get('id', '')
+                        channels[channel_id] = {
+                            'id': channel_id,
+                            'name': ch.get('name', ''),
+                            'is_private': ch.get('is_private', False),
+                            'is_archived': ch.get('is_archived', False),
+                            'num_members': ch.get('num_members', 0)
+                        }
+
+            return channels
+        except Exception as e:
+            if self.verbose:
+                print(f"[SLACK AGENT] Could not fetch channels: {e}")
+            return {}
+
+    async def _fetch_all_users(self) -> Dict:
+        """Fetch all users (limit to active to avoid huge lists)"""
+        try:
+            # Use Slack MCP tool to list users
+            result = await self.session.call_tool("slack_list_users", {})
+
+            users = {}
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "{}"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, dict) and 'members' in data:
+                    user_list = data['members']
+                elif isinstance(data, list):
+                    user_list = data
+                else:
+                    user_list = []
+
+                # Limit to first 100 active users to avoid huge cache
+                for user in user_list[:100]:
+                    if not user.get('deleted', False) and not user.get('is_bot', False):
+                        user_id = user.get('id', '')
+                        users[user_id] = {
+                            'id': user_id,
+                            'name': user.get('name', ''),
+                            'real_name': user.get('real_name', ''),
+                            'display_name': user.get('profile', {}).get('display_name', '')
+                        }
+
+            return users
+        except Exception as e:
+            if self.verbose:
+                print(f"[SLACK AGENT] Could not fetch users: {e}")
+            return {}
 
     # ========================================================================
     # CORE EXECUTION ENGINE
@@ -1149,6 +1274,58 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
             ]
 
         return capabilities
+
+    async def validate_operation(self, instruction: str) -> Dict[str, Any]:
+        """
+        Validate if a Slack operation can be performed (Feature #14)
+
+        Uses cached metadata to quickly check if the operation is likely to succeed.
+
+        Args:
+            instruction: The instruction to validate
+
+        Returns:
+            Dict with validation results
+        """
+        result = {
+            'valid': True,
+            'missing': [],
+            'warnings': [],
+            'confidence': 1.0
+        }
+
+        instruction_lower = instruction.lower()
+
+        # Check if we're sending a message to a channel
+        if any(word in instruction_lower for word in ['send', 'post', 'message']) and 'channel' in instruction_lower:
+            # Check if we have channel metadata
+            if not self.metadata_cache.get('channels'):
+                result['warnings'].append("No channel metadata cached - operation may be slow")
+                result['confidence'] = 0.7
+
+            # Try to extract channel name from instruction
+            channels = self.metadata_cache.get('channels', {})
+            if channels:
+                # Check if instruction mentions a known channel
+                mentioned_channel = None
+                for channel_data in channels.values():
+                    channel_name = channel_data.get('name', '')
+                    if f"#{channel_name}" in instruction_lower or channel_name in instruction_lower:
+                        mentioned_channel = channel_name
+                        break
+
+                if not mentioned_channel:
+                    result['missing'].append("channel name")
+                    result['valid'] = False
+                    result['confidence'] = 0.3
+
+        # Check if agent is initialized
+        if not self.initialized:
+            result['valid'] = False
+            result['missing'].append("agent initialization")
+            result['confidence'] = 0.0
+
+        return result
 
     def get_stats(self) -> str:
         """Get operation statistics summary"""

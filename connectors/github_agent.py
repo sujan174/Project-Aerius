@@ -164,6 +164,9 @@ class Agent(BaseAgent):
         self.shared_context = shared_context
         self.proactive = ProactiveAssistant('github', verbose)
 
+        # Feature #1: Metadata Cache for faster operations
+        self.metadata_cache = {}
+
         # Schema type mapping for Gemini
         self.schema_type_map = {
             "string": protos.Type.STRING,
@@ -887,6 +890,9 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
 
             self.initialized = True
 
+            # Feature #1: Prefetch repository metadata for faster operations
+            await self._prefetch_metadata()
+
             if self.verbose:
                 print(f"[GITHUB AGENT] Initialization complete. {len(self.available_tools)} tools available.")
 
@@ -899,6 +905,107 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
                 "3. Check that your token has required scopes (repo, read:org, user)\n"
                 "4. Ensure token hasn't expired"
             )
+
+    async def _prefetch_metadata(self):
+        """
+        Prefetch and cache GitHub metadata for faster operations (Feature #1)
+
+        Fetches accessible repositories, labels, and collaborators at initialization
+        time to avoid discovery overhead on every operation.
+
+        Cache is persisted to knowledge base with a 1-hour TTL.
+        """
+        try:
+            # Check if we have valid cached metadata
+            cached = self.knowledge.get_metadata_cache('github')
+            if cached:
+                self.metadata_cache = cached
+                if self.verbose:
+                    print(f"[GITHUB AGENT] Loaded metadata from cache ({len(cached.get('repositories', {}))} repos)")
+                return
+
+            if self.verbose:
+                print(f"[GITHUB AGENT] Prefetching metadata...")
+
+            # Fetch accessible repositories (limit to avoid huge lists)
+            repositories = await self._fetch_accessible_repos()
+
+            # Fetch labels for top repos (limit to avoid too many calls)
+            for repo_full_name in list(repositories.keys())[:5]:  # Top 5 repos only
+                try:
+                    repositories[repo_full_name]['labels'] = await self._fetch_repo_labels(repo_full_name)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[GITHUB AGENT] Warning: Could not fetch labels for {repo_full_name}: {e}")
+
+            # Store in cache
+            self.metadata_cache = {
+                'repositories': repositories,
+                'fetched_at': asyncio.get_event_loop().time()
+            }
+
+            # Persist to knowledge base
+            self.knowledge.save_metadata_cache('github', self.metadata_cache, ttl_seconds=3600)
+
+            if self.verbose:
+                print(f"[GITHUB AGENT] Cached metadata for {len(repositories)} repositories")
+
+        except Exception as e:
+            # Graceful degradation: If prefetch fails, continue without cache
+            if self.verbose:
+                print(f"[GITHUB AGENT] Warning: Metadata prefetch failed: {e}")
+            print(f"[GITHUB AGENT] Continuing without metadata cache (operations may be slower)")
+
+    async def _fetch_accessible_repos(self) -> Dict:
+        """Fetch accessible repositories"""
+        try:
+            # Use GitHub MCP tool to list repos
+            result = await self.session.call_tool("github_list_repos", {})
+
+            repositories = {}
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "[]"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, list):
+                    # Limit to first 20 repos to avoid huge cache
+                    for repo in data[:20]:
+                        full_name = repo.get('full_name', '')
+                        if full_name:
+                            repositories[full_name] = {
+                                'full_name': full_name,
+                                'name': repo.get('name', ''),
+                                'owner': repo.get('owner', {}).get('login', ''),
+                                'private': repo.get('private', False),
+                                'default_branch': repo.get('default_branch', 'main')
+                            }
+
+            return repositories
+        except Exception as e:
+            if self.verbose:
+                print(f"[GITHUB AGENT] Could not fetch repos: {e}")
+            return {}
+
+    async def _fetch_repo_labels(self, repo_full_name: str) -> List[str]:
+        """Fetch labels for a repository"""
+        try:
+            owner, repo = repo_full_name.split('/', 1)
+            result = await self.session.call_tool("github_list_labels", {
+                "owner": owner,
+                "repo": repo
+            })
+
+            labels = []
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "[]"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, list):
+                    labels = [label.get('name', '') for label in data if label.get('name')]
+
+            return labels
+        except:
+            return []
 
     # ========================================================================
     # CORE EXECUTION ENGINE
@@ -1275,6 +1382,57 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             ]
 
         return capabilities
+
+    async def validate_operation(self, instruction: str) -> Dict[str, Any]:
+        """
+        Validate if a GitHub operation can be performed (Feature #14)
+
+        Uses cached metadata to quickly check if the operation is likely to succeed.
+
+        Args:
+            instruction: The instruction to validate
+
+        Returns:
+            Dict with validation results
+        """
+        result = {
+            'valid': True,
+            'missing': [],
+            'warnings': [],
+            'confidence': 1.0
+        }
+
+        instruction_lower = instruction.lower()
+
+        # Check if we're working with a specific repository
+        if any(word in instruction_lower for word in ['create issue', 'create pr', 'pull request']):
+            # Check if we have repository metadata
+            if not self.metadata_cache.get('repositories'):
+                result['warnings'].append("No repository metadata cached - operation may be slow")
+                result['confidence'] = 0.7
+
+            # Try to extract repo name from instruction
+            repositories = self.metadata_cache.get('repositories', {})
+            if repositories:
+                # Check if instruction mentions a known repo
+                mentioned_repo = None
+                for repo_full_name in repositories.keys():
+                    if repo_full_name.lower() in instruction_lower:
+                        mentioned_repo = repo_full_name
+                        break
+
+                if not mentioned_repo:
+                    result['missing'].append("repository name (owner/repo)")
+                    result['valid'] = False
+                    result['confidence'] = 0.3
+
+        # Check if agent is initialized
+        if not self.initialized:
+            result['valid'] = False
+            result['missing'].append("agent initialization")
+            result['confidence'] = 0.0
+
+        return result
 
     def get_stats(self) -> str:
         """Get operation statistics summary"""

@@ -163,6 +163,9 @@ class Agent(BaseAgent):
         self.shared_context = shared_context
         self.proactive = ProactiveAssistant('notion', verbose)
 
+        # Feature #1: Metadata Cache for faster operations
+        self.metadata_cache = {}
+
         # Schema type mapping for Gemini
         self.schema_type_map = {
             "string": protos.Type.STRING,
@@ -623,6 +626,9 @@ Remember: You're not just executing commands—you're helping users build a powe
 
             self.initialized = True
 
+            # Feature #1: Prefetch workspace metadata for faster operations
+            await self._prefetch_metadata()
+
             if self.verbose:
                 print(f"[NOTION AGENT] Initialization complete. {len(self.available_tools)} tools available.")
 
@@ -635,6 +641,74 @@ Remember: You're not just executing commands—you're helping users build a powe
                 "3. You may need to authenticate via browser popup when prompted\n"
                 "4. Verify you have the necessary Notion workspace permissions"
             )
+
+    async def _prefetch_metadata(self):
+        """
+        Prefetch and cache Notion workspace metadata for faster operations (Feature #1)
+
+        Fetches accessible databases and pages at initialization time
+        to avoid discovery overhead on every operation.
+
+        Cache is persisted to knowledge base with a 1-hour TTL.
+        """
+        try:
+            # Check if we have valid cached metadata
+            cached = self.knowledge.get_metadata_cache('notion')
+            if cached:
+                self.metadata_cache = cached
+                if self.verbose:
+                    print(f"[NOTION AGENT] Loaded metadata from cache ({len(cached.get('databases', {}))} databases)")
+                return
+
+            if self.verbose:
+                print(f"[NOTION AGENT] Prefetching metadata...")
+
+            # Fetch accessible databases
+            databases = await self._fetch_accessible_databases()
+
+            # Store in cache
+            self.metadata_cache = {
+                'databases': databases,
+                'fetched_at': asyncio.get_event_loop().time()
+            }
+
+            # Persist to knowledge base
+            self.knowledge.save_metadata_cache('notion', self.metadata_cache, ttl_seconds=3600)
+
+            if self.verbose:
+                print(f"[NOTION AGENT] Cached metadata for {len(databases)} databases")
+
+        except Exception as e:
+            # Graceful degradation: If prefetch fails, continue without cache
+            if self.verbose:
+                print(f"[NOTION AGENT] Warning: Metadata prefetch failed: {e}")
+            print(f"[NOTION AGENT] Continuing without metadata cache (operations may be slower)")
+
+    async def _fetch_accessible_databases(self) -> Dict:
+        """Fetch accessible databases"""
+        try:
+            # Use Notion MCP tool to list databases
+            result = await self.session.call_tool("notion_search", {"query": ""})
+
+            databases = {}
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "{}"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, dict) and 'results' in data:
+                    for item in data['results']:
+                        if item.get('object') == 'database':
+                            db_id = item.get('id', '')
+                            databases[db_id] = {
+                                'id': db_id,
+                                'title': item.get('title', [{}])[0].get('plain_text', 'Untitled') if item.get('title') else 'Untitled'
+                            }
+
+            return databases
+        except Exception as e:
+            if self.verbose:
+                print(f"[NOTION AGENT] Could not fetch databases: {e}")
+            return {}
 
     # ========================================================================
     # CORE EXECUTION ENGINE
@@ -989,6 +1063,58 @@ Remember: You're not just executing commands—you're helping users build a powe
             ]
 
         return capabilities
+
+    async def validate_operation(self, instruction: str) -> Dict[str, Any]:
+        """
+        Validate if a Notion operation can be performed (Feature #14)
+
+        Uses cached metadata to quickly check if the operation is likely to succeed.
+
+        Args:
+            instruction: The instruction to validate
+
+        Returns:
+            Dict with validation results
+        """
+        result = {
+            'valid': True,
+            'missing': [],
+            'warnings': [],
+            'confidence': 1.0
+        }
+
+        instruction_lower = instruction.lower()
+
+        # Check if we're working with a database
+        if any(word in instruction_lower for word in ['create entry', 'add to database', 'update database']):
+            # Check if we have database metadata
+            if not self.metadata_cache.get('databases'):
+                result['warnings'].append("No database metadata cached - operation may be slow")
+                result['confidence'] = 0.7
+
+            # Try to extract database name from instruction
+            databases = self.metadata_cache.get('databases', {})
+            if databases:
+                # Check if instruction mentions a known database
+                mentioned_db = None
+                for db_data in databases.values():
+                    db_title = db_data.get('title', '').lower()
+                    if db_title in instruction_lower:
+                        mentioned_db = db_title
+                        break
+
+                if not mentioned_db:
+                    result['missing'].append("database name")
+                    result['valid'] = False
+                    result['confidence'] = 0.3
+
+        # Check if agent is initialized
+        if not self.initialized:
+            result['valid'] = False
+            result['missing'].append("agent initialization")
+            result['confidence'] = 0.0
+
+        return result
 
     def get_stats(self) -> str:
         """Get operation statistics summary"""

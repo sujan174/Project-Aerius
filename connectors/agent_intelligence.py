@@ -164,6 +164,7 @@ class WorkspaceKnowledge:
             'user_preferences': {},
             'error_solutions': {},
             'patterns': {},
+            'metadata_caches': {},  # Feature #1: Store agent metadata caches
             'version': '1.0'
         }
 
@@ -255,6 +256,63 @@ class WorkspaceKnowledge:
     def get_user_preference(self, key: str, default=None) -> Any:
         """Get user preference"""
         return self.data['user_preferences'].get(key, default)
+
+    def save_metadata_cache(self, agent_name: str, metadata: Dict, ttl_seconds: int = 3600):
+        """
+        Save agent metadata cache with TTL (Feature #1)
+
+        Args:
+            agent_name: Name of the agent (e.g., 'jira', 'slack')
+            metadata: Metadata dictionary to cache
+            ttl_seconds: Time-to-live in seconds (default: 1 hour)
+        """
+        self.data['metadata_caches'][agent_name] = {
+            'data': metadata,
+            'cached_at': datetime.now().isoformat(),
+            'ttl_seconds': ttl_seconds
+        }
+        self._save()
+
+        if hasattr(self, 'verbose') and self.verbose:
+            print(f"[KNOWLEDGE] Cached metadata for {agent_name} (TTL: {ttl_seconds}s)")
+
+    def get_metadata_cache(self, agent_name: str) -> Optional[Dict]:
+        """
+        Get cached metadata for an agent if still valid (Feature #1)
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Cached metadata dict, or None if expired/not found
+        """
+        if agent_name not in self.data['metadata_caches']:
+            return None
+
+        cache_entry = self.data['metadata_caches'][agent_name]
+        cached_at = datetime.fromisoformat(cache_entry['cached_at'])
+        ttl = cache_entry.get('ttl_seconds', 3600)
+
+        # Check if cache is still valid
+        age_seconds = (datetime.now() - cached_at).total_seconds()
+        if age_seconds > ttl:
+            # Cache expired
+            if hasattr(self, 'verbose') and self.verbose:
+                print(f"[KNOWLEDGE] Metadata cache for {agent_name} expired (age: {age_seconds:.0f}s)")
+            return None
+
+        return cache_entry['data']
+
+    def invalidate_metadata_cache(self, agent_name: str):
+        """
+        Invalidate (delete) cached metadata for an agent
+
+        Args:
+            agent_name: Name of the agent
+        """
+        if agent_name in self.data['metadata_caches']:
+            del self.data['metadata_caches'][agent_name]
+            self._save()
 
 
 # ============================================================================

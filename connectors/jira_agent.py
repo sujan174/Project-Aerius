@@ -164,6 +164,9 @@ class Agent(BaseAgent):
         self.shared_context = shared_context
         self.proactive = ProactiveAssistant('jira', verbose)
 
+        # Feature #1: Metadata Cache for faster operations
+        self.metadata_cache = {}
+
         # Schema type mapping for Gemini
         self.schema_type_map = {
             "string": protos.Type.STRING,
@@ -441,6 +444,9 @@ Remember: You're not just executing commands—you're helping users manage their
 
             self.initialized = True
 
+            # Feature #1: Prefetch project metadata for faster operations
+            await self._prefetch_metadata()
+
             if self.verbose:
                 print(f"[JIRA AGENT] Initialization complete. {len(self.available_tools)} tools available.")
 
@@ -583,6 +589,102 @@ Remember: You're not just executing commands—you're helping users manage their
             "5. Test the MCP server directly:",
             "   docker run -i --rm -e JIRA_URL -e JIRA_USERNAME -e JIRA_API_TOKEN ghcr.io/sooperset/mcp-atlassian:latest"
         ]
+
+    async def _prefetch_metadata(self):
+        """
+        Prefetch and cache Jira metadata for faster operations (Feature #1)
+
+        This method fetches project metadata, issue types, fields, etc. at
+        initialization time to avoid discovery overhead on every operation.
+
+        The cache is persisted to the knowledge base with a 1-hour TTL.
+        """
+        try:
+            # Check if we have valid cached metadata
+            cached = self.knowledge.get_metadata_cache('jira')
+            if cached:
+                self.metadata_cache = cached
+                if self.verbose:
+                    print(f"[JIRA AGENT] Loaded metadata from cache ({len(cached.get('projects', {}))} projects)")
+                return
+
+            if self.verbose:
+                print(f"[JIRA AGENT] Prefetching metadata...")
+
+            # Fetch all projects
+            projects = await self._fetch_all_projects()
+
+            # Fetch issue types and fields for each project
+            for project_key in list(projects.keys())[:10]:  # Limit to 10 projects for speed
+                try:
+                    projects[project_key]['issue_types'] = await self._fetch_project_issue_types(project_key)
+                    projects[project_key]['fields'] = await self._fetch_project_fields(project_key)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[JIRA AGENT] Warning: Could not fetch metadata for {project_key}: {e}")
+
+            # Store in cache
+            self.metadata_cache = {
+                'projects': projects,
+                'fetched_at': asyncio.get_event_loop().time()
+            }
+
+            # Persist to knowledge base
+            self.knowledge.save_metadata_cache('jira', self.metadata_cache, ttl_seconds=3600)
+
+            if self.verbose:
+                print(f"[JIRA AGENT] Cached metadata for {len(projects)} projects")
+
+        except Exception as e:
+            # Graceful degradation: If prefetch fails, continue without cache
+            if self.verbose:
+                print(f"[JIRA AGENT] Warning: Metadata prefetch failed: {e}")
+            print(f"[JIRA AGENT] Continuing without metadata cache (operations may be slower)")
+
+    async def _fetch_all_projects(self) -> Dict:
+        """Fetch all accessible projects"""
+        try:
+            # Use MCP tool to get projects
+            result = await self.session.call_tool("jira_get_projects", {})
+
+            projects = {}
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "{}"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, list):
+                    for proj in data:
+                        key = proj.get('key', '')
+                        projects[key] = {
+                            'id': proj.get('id', ''),
+                            'name': proj.get('name', ''),
+                            'key': key
+                        }
+
+            return projects
+        except:
+            return {}
+
+    async def _fetch_project_issue_types(self, project_key: str) -> List[str]:
+        """Fetch available issue types for a project"""
+        try:
+            result = await self.session.call_tool("jira_get_issue_types", {"project": project_key})
+
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0].text if result.content else "[]"
+                data = json.loads(content) if isinstance(content, str) else content
+
+                if isinstance(data, list):
+                    return [t.get('name', '') for t in data if t.get('name')]
+
+            return []
+        except:
+            return []
+
+    async def _fetch_project_fields(self, project_key: str) -> Dict:
+        """Fetch custom fields for a project"""
+        # Simplified - just return empty for now as this can be heavy
+        return {}
 
     # ========================================================================
     # CORE EXECUTION ENGINE
@@ -1098,6 +1200,57 @@ Remember: You're not just executing commands—you're helping users manage their
             ]
 
         return capabilities
+
+    async def validate_operation(self, instruction: str) -> Dict[str, Any]:
+        """
+        Validate if a Jira operation can be performed (Feature #14)
+
+        Uses cached metadata to quickly check if the operation is likely to succeed.
+
+        Args:
+            instruction: The instruction to validate
+
+        Returns:
+            Dict with validation results
+        """
+        result = {
+            'valid': True,
+            'missing': [],
+            'warnings': [],
+            'confidence': 1.0
+        }
+
+        instruction_lower = instruction.lower()
+
+        # Check if we're creating an issue
+        if any(word in instruction_lower for word in ['create', 'new']) and 'issue' in instruction_lower:
+            # Check if we have project metadata
+            if not self.metadata_cache.get('projects'):
+                result['warnings'].append("No project metadata cached - operation may be slow")
+                result['confidence'] = 0.7
+
+            # Try to extract project key from instruction
+            projects = self.metadata_cache.get('projects', {})
+            if projects:
+                # Check if instruction mentions a known project
+                mentioned_project = None
+                for proj_key in projects.keys():
+                    if proj_key.lower() in instruction_lower:
+                        mentioned_project = proj_key
+                        break
+
+                if not mentioned_project:
+                    result['missing'].append("project name or key")
+                    result['valid'] = False
+                    result['confidence'] = 0.3
+
+        # Check if agent is initialized
+        if not self.initialized:
+            result['valid'] = False
+            result['missing'].append("agent initialization")
+            result['confidence'] = 0.0
+
+        return result
 
     def get_stats(self) -> str:
         """

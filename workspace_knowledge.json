@@ -1,0 +1,71 @@
+{
+  "projects": {},
+  "user_preferences": {},
+  "error_solutions": {},
+  "patterns": {},
+  "metadata_caches": {
+    "github": {
+      "data": {
+        "repositories": {},
+        "fetched_at": 1322815.258953416
+      },
+      "cached_at": "2025-11-01T12:15:10.960591",
+      "ttl_seconds": 3600
+    },
+    "slack": {
+      "data": {
+        "channels": {
+          "C09M8QV7X55": {
+            "id": "C09M8QV7X55",
+            "name": "all-lazy-devs",
+            "is_private": false,
+            "is_archived": false,
+            "num_members": 3
+          },
+          "C09MHSFK7PV": {
+            "id": "C09MHSFK7PV",
+            "name": "social",
+            "is_private": false,
+            "is_archived": false,
+            "num_members": 2
+          },
+          "C09MHSPR119": {
+            "id": "C09MHSPR119",
+            "name": "lazy-devs-collab",
+            "is_private": false,
+            "is_archived": false,
+            "num_members": 2
+          },
+          "C09MTRNQNP6": {
+            "id": "C09MTRNQNP6",
+            "name": "dev-opps",
+            "is_private": false,
+            "is_archived": false,
+            "num_members": 3
+          }
+        },
+        "users": {},
+        "fetched_at": 1322814.622994791
+      },
+      "cached_at": "2025-11-01T12:15:10.324642",
+      "ttl_seconds": 3600
+    },
+    "jira": {
+      "data": {
+        "projects": {},
+        "fetched_at": 1322815.814716291
+      },
+      "cached_at": "2025-11-01T12:15:11.516350",
+      "ttl_seconds": 3600
+    },
+    "notion": {
+      "data": {
+        "databases": {},
+        "fetched_at": 1322816.11038625
+      },
+      "cached_at": "2025-11-01T12:15:11.812019",
+      "ttl_seconds": 3600
+    }
+  },
+  "version": "1.0"
+}

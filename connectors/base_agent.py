@@ -227,6 +227,50 @@ class BaseAgent(ABC):
         """
         pass
 
+    async def validate_operation(self, instruction: str) -> Dict[str, Any]:
+        """
+        Validate if an operation can be performed before execution (Feature #14)
+
+        This method performs quick pre-flight checks to catch errors early:
+        - Are required parameters available?
+        - Do we have proper authentication?
+        - Does the target resource exist?
+
+        The default implementation returns valid=True. Override in child classes
+        for agent-specific validation logic.
+
+        Args:
+            instruction: The instruction to validate
+
+        Returns:
+            Dict with structure:
+            {
+                'valid': bool,              # Can this operation proceed?
+                'missing': List[str],       # Missing required information
+                'warnings': List[str],      # Non-blocking warnings
+                'confidence': float         # 0.0-1.0, how confident we are
+            }
+
+        Example:
+            async def validate_operation(self, instruction: str) -> Dict:
+                if 'create issue' in instruction.lower():
+                    if not self.metadata_cache.get('projects'):
+                        return {
+                            'valid': False,
+                            'missing': ['project information'],
+                            'warnings': [],
+                            'confidence': 0.0
+                        }
+                return {'valid': True, 'missing': [], 'warnings': [], 'confidence': 1.0}
+        """
+        # Default: assume operation is valid
+        return {
+            'valid': True,
+            'missing': [],
+            'warnings': [],
+            'confidence': 1.0
+        }
+
     # ========================================================================
     # HELPER METHODS - Available to all child classes
     # ========================================================================

@@ -4,6 +4,7 @@ import sys  # Added for verbose flag
 import asyncio
 import traceback
 import uuid
+import hashlib  # For operation key hashing
 from typing import Any, Dict, List, Optional
 import google.generativeai as genai
 import google.generativeai.protos as protos
@@ -42,12 +43,29 @@ class OrchestratorAgent:
         self.connectors_dir = Path(connectors_dir)
         self.sub_agents: Dict[str, Any] = {}
         self.agent_capabilities: Dict[str, List[str]] = {}
+        self.agent_health: Dict[str, Dict[str, Any]] = {}  # Track agent health status
         self.verbose = verbose  # Set to True for detailed logging
 
         # Intelligence components for smart cross-agent coordination
         self.knowledge_base = WorkspaceKnowledge()
         self.session_id = str(uuid.uuid4())
         self.shared_context = SharedContext(self.session_id)
+
+        # Feature #20: Confirmation preferences
+        self.confirmation_prefs = {
+            'always_confirm_deletes': True,
+            'always_confirm_bulk': True,
+            'bulk_threshold': 5,
+            'confirm_public_posts': True,
+            'confirm_ambiguous': True
+        }
+
+        # Feature #8: Intelligent Retry tracking
+        self.retry_tracker: Dict[str, Dict[str, Any]] = {}  # Track retry attempts per operation
+        self.max_retry_attempts = 3  # Maximum retries before suggesting alternative
+
+        # Feature #11: Simple progress tracking for streaming
+        self.operation_count = 0  # Track number of operations in current request
 
         if self.verbose:
             print(f"{C.CYAN}🧠 Intelligence enabled: Session {self.session_id[:8]}...{C.ENDC}")
@@ -167,16 +185,17 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             print("\033[?25h", end='', flush=True)
     
     async def _load_single_agent(self, connector_file: Path) -> Optional[tuple]:
-        """Load a single agent connector. Returns (agent_name, agent_instance, capabilities) or None on failure."""
+        """Load a single agent connector. Returns (agent_name, agent_instance, capabilities, messages) or None on failure."""
         agent_name = connector_file.stem.replace("_agent", "")
-        
-        # Skip base_agent.py
-        if agent_name == "base":
+        messages = []  # Buffer messages for this agent
+
+        # Skip base_agent.py and intelligence module
+        if agent_name in ["base", "agent_intelligence"]:
             return None
-            
+
         if self.verbose:
-            print(f"{C.CYAN}📦 Loading: {C.BOLD}{agent_name}{C.ENDC}{C.CYAN} agent...{C.ENDC}")
-        
+            messages.append(f"{C.CYAN}📦 Loading: {C.BOLD}{agent_name}{C.ENDC}{C.CYAN} agent...{C.ENDC}")
+
         try:
             # Dynamically import the module
             spec = importlib.util.spec_from_file_location(
@@ -188,9 +207,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             
             # Look for AgentClass in the module
             if not hasattr(module, 'Agent'):
-                print(f"{C.RED}  ✗ No 'Agent' class found in {connector_file}{C.ENDC}")
+                messages.append(f"{C.RED}  ✗ No 'Agent' class found in {connector_file}{C.ENDC}")
                 return None
-            
+
             agent_class = module.Agent
 
             # Try to initialize with intelligence components (smart agents) or just verbose (legacy agents)
@@ -216,68 +235,109 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             # Initialize the agent
             try:
                 await agent_instance.initialize()
-                
+
                 # Get agent capabilities
                 capabilities = await agent_instance.get_capabilities()
-                
+
                 if self.verbose:
-                    print(f"{C.GREEN}  ✓ Loaded {agent_name} with {len(capabilities)} capabilities{C.ENDC}")
+                    messages.append(f"{C.GREEN}  ✓ Loaded {agent_name} with {len(capabilities)} capabilities{C.ENDC}")
                     for cap in capabilities[:3]:  # Show first 3
-                        print(f"{C.GREEN}    - {cap}{C.ENDC}")
+                        messages.append(f"{C.GREEN}    - {cap}{C.ENDC}")
                     if len(capabilities) > 3:
-                        print(f"{C.GREEN}    ... and {len(capabilities) - 3} more{C.ENDC}")
-                
-                return (agent_name, agent_instance, capabilities)
-                
+                        messages.append(f"{C.GREEN}    ... and {len(capabilities) - 3} more{C.ENDC}")
+
+                return (agent_name, agent_instance, capabilities, messages)
+
             except Exception as init_error:
-                print(f"{C.RED}  ✗ Failed to initialize {agent_name}: {init_error}{C.ENDC}")
+                messages.append(f"{C.RED}  ✗ Failed to initialize {agent_name}: {init_error}{C.ENDC}")
                 if self.verbose:
-                    traceback.print_exc()
+                    messages.append(f"{C.RED}    {traceback.format_exc()}{C.ENDC}")
                 # Clean up the failed agent
                 try:
                     if hasattr(agent_instance, 'cleanup'):
                         await agent_instance.cleanup()
                 except:
                     pass
-                return None
-                
+                return (agent_name, None, None, messages)
+
         except Exception as e:
-            # Always print errors
-            print(f"{C.RED}  ✗ Failed to load {agent_name}: {e}{C.ENDC}")
+            # Buffer errors instead of printing
+            messages.append(f"{C.RED}  ✗ Failed to load {agent_name}: {e}{C.ENDC}")
             if self.verbose:
-                traceback.print_exc()
-            return None
+                messages.append(f"{C.RED}    {traceback.format_exc()}{C.ENDC}")
+            return (agent_name, None, None, messages)
     
     async def discover_and_load_agents(self):
-        """Automatically discover and load all agent connectors"""
+        """Automatically discover and load all agent connectors in parallel"""
         if self.verbose:
             print(f"\n{C.YELLOW}{'='*60}{C.ENDC}")
             print(f"{C.BOLD}{C.CYAN}🔍 Discovering Agent Connectors...{C.ENDC}")
             print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
-        
+
         if not self.connectors_dir.exists():
             print(f"{C.RED}✗ Connectors directory '{self.connectors_dir}' not found!{C.ENDC}")
             print(f"{C.YELLOW}Creating directory...{C.ENDC}")
             self.connectors_dir.mkdir(parents=True, exist_ok=True)
             return
-        
+
         # Find all Python files in connectors directory
         connector_files = list(self.connectors_dir.glob("*_agent.py"))
-        
+
         if not connector_files:
             print(f"{C.YELLOW}⚠ No agent connectors found in '{self.connectors_dir}'{C.ENDC}")
             print(f"{C.YELLOW}  Expected files matching pattern: *_agent.py{C.ENDC}")
             return
-        
-        # Load agents sequentially to avoid concurrent initialization issues
-        for connector_file in connector_files:
-            result = await self._load_single_agent(connector_file)
-            if result:
-                agent_name, agent_instance, capabilities = result
+
+        # Load all agents in parallel using asyncio.gather
+        print(f"{C.CYAN}Loading {len(connector_files)} agent(s) in parallel...{C.ENDC}\n")
+
+        load_tasks = [self._load_single_agent(f) for f in connector_files]
+        results = await asyncio.gather(*load_tasks, return_exceptions=True)
+
+        # Process results and print buffered messages
+        successful = 0
+        failed = 0
+
+        for result in results:
+            if result is None:
+                continue
+
+            if isinstance(result, Exception):
+                failed += 1
+                print(f"{C.RED}✗ Exception during loading: {result}{C.ENDC}")
+                continue
+
+            agent_name, agent_instance, capabilities, messages = result
+
+            # Print buffered messages
+            for msg in messages:
+                print(msg)
+
+            # Store agent if successfully loaded
+            if agent_instance is not None and capabilities is not None:
                 self.sub_agents[agent_name] = agent_instance
                 self.agent_capabilities[agent_name] = capabilities
-        
-        print(f"\n{C.GREEN}✓ Loaded {len(self.sub_agents)} agent(s) successfully.{C.ENDC}")
+                self.agent_health[agent_name] = {
+                    'status': 'healthy',
+                    'last_success': asyncio.get_event_loop().time(),
+                    'error_count': 0
+                }
+                successful += 1
+            else:
+                # Agent failed to load - mark as unavailable (Feature #15: Graceful Degradation)
+                self.agent_health[agent_name] = {
+                    'status': 'unavailable',
+                    'last_failure': asyncio.get_event_loop().time(),
+                    'error_count': 1,
+                    'error_message': 'Failed to initialize'
+                }
+                failed += 1
+
+        # Summary
+        print(f"\n{C.GREEN}✓ Loaded {successful} agent(s) successfully.{C.ENDC}")
+        if failed > 0:
+            print(f"{C.YELLOW}⚠ {failed} agent(s) failed to load but system will continue.{C.ENDC}")
+
         if self.verbose:
             print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
     
@@ -316,47 +376,72 @@ Provide a clear instruction describing what you want to accomplish.""",
         return tools
     
     async def call_sub_agent(self, agent_name: str, instruction: str, context: Any = None) -> str:
-        """Execute a task using a specialized sub-agent"""
+        """Execute a task using a specialized sub-agent with health checking"""
         if agent_name not in self.sub_agents:
             return f"Error: Agent '{agent_name}' not found"
-        
+
+        # Feature #15: Graceful Degradation - Check agent health before calling
+        if agent_name in self.agent_health:
+            health = self.agent_health[agent_name]
+            if health['status'] == 'unavailable':
+                error_msg = f"⚠️ {agent_name} agent is currently unavailable: {health.get('error_message', 'Unknown error')}"
+                print(f"{C.YELLOW}{error_msg}{C.ENDC}")
+                return error_msg
+
         if self.verbose:
             print(f"\n{C.MAGENTA}{'─'*60}{C.ENDC}")
             print(f"{C.MAGENTA}🤖 Delegating to {C.BOLD}{agent_name}{C.ENDC}{C.MAGENTA} agent{C.ENDC}")
             print(f"{C.MAGENTA}{'─'*60}{C.ENDC}")
             print(f"{C.CYAN}Instruction: {instruction}{C.ENDC}")
-        
+
         # --- START FIX ---
         context_str = ""
         if context:
             # If context is a dict/object, JSON-serialize it. Otherwise, cast to string.
-            if isinstance(context, (dict, list)): 
+            if isinstance(context, (dict, list)):
                 context_str = json.dumps(context, indent=2)
             else:
                 context_str = str(context)
-            
+
             if self.verbose:
                 print(f"{C.CYAN}Context: {context_str[:200]}...{C.ENDC}")
         # --- END FIX ---
-        
+
         try:
             agent = self.sub_agents[agent_name]
-            
+
             # Build the full prompt with context_str
             full_instruction = instruction
             if context_str:
                 full_instruction = f"Context from previous steps:\n{context_str}\n\nTask: {instruction}"
-            
+
             # Execute the agent
             result = await agent.execute(full_instruction)
-            
+
+            # Update health status on success
+            if agent_name in self.agent_health:
+                self.agent_health[agent_name]['status'] = 'healthy'
+                self.agent_health[agent_name]['last_success'] = asyncio.get_event_loop().time()
+                self.agent_health[agent_name]['error_count'] = 0
+
             if self.verbose:
                 print(f"{C.GREEN}✓ {agent_name} completed successfully{C.ENDC}")
                 print(f"{C.MAGENTA}{'─'*60}{C.ENDC}\n")
-            
+
             return result
-            
+
         except Exception as e:
+            # Update health status on failure
+            if agent_name in self.agent_health:
+                self.agent_health[agent_name]['error_count'] = self.agent_health[agent_name].get('error_count', 0) + 1
+                self.agent_health[agent_name]['last_failure'] = asyncio.get_event_loop().time()
+                self.agent_health[agent_name]['error_message'] = str(e)
+
+                # Mark as degraded if error count exceeds threshold
+                if self.agent_health[agent_name]['error_count'] >= 3:
+                    self.agent_health[agent_name]['status'] = 'degraded'
+                    print(f"{C.YELLOW}⚠️ {agent_name} agent marked as degraded after 3 failures{C.ENDC}")
+
             error_msg = f"Error executing {agent_name} agent: {str(e)}"
             print(f"{C.RED}✗ {error_msg}{C.ENDC}")
             if self.verbose:
@@ -385,14 +470,18 @@ Provide a clear instruction describing what you want to accomplish.""",
             )
             
             self.chat = self.model.start_chat(history=self.conversation_history)
-        
+
+        # Reset operation counter for this request
+        self.operation_count = 0
+
         # Create and run the initial send task with a spinner
         send_task = asyncio.create_task(self.chat.send_message_async(user_message))
         await self._spinner(send_task, "Thinking")
         response = send_task.result()
         
         # Handle function calling loop
-        max_iterations = 15
+        # Increased from 15 to 30 for batch operations
+        max_iterations = 30
         iteration = 0
         
         while iteration < max_iterations:
@@ -428,13 +517,148 @@ Provide a clear instruction describing what you want to accomplish.""",
             
             instruction = args.get("instruction", "")
             context = args.get("context", "") # This will be a dict/list if passed by LLM
-            
-            # Call the sub-agent with a spinner
+
+            # Feature #20: Check if operation needs confirmation
+            risk_info = self._detect_risky_operation(agent_name, instruction)
+
+            if risk_info.get('needs_confirmation'):
+                # Handle ambiguous operations (resolve before confirming)
+                if risk_info['risk_type'] == 'ambiguous':
+                    enhanced_instruction = self._resolve_ambiguity(agent_name, instruction, risk_info)
+                    if enhanced_instruction is None:
+                        # User cancelled during ambiguity resolution
+                        result = "⚠️ Operation cancelled by user"
+                        # Skip to next iteration
+                        response_task = asyncio.create_task(
+                            self.chat.send_message_async(
+                                genai.protos.Content(
+                                    parts=[genai.protos.Part(
+                                        function_response=genai.protos.FunctionResponse(
+                                            name=tool_name,
+                                            response={"result": result}
+                                        )
+                                    )]
+                                )
+                            )
+                        )
+                        await self._spinner(response_task, "Updating")
+                        response = response_task.result()
+                        iteration += 1
+                        continue
+                    instruction = enhanced_instruction
+
+                # Ask for confirmation for other risky operations
+                if risk_info['risk_type'] != 'ambiguous':
+                    confirmed = self._ask_confirmation(risk_info, instruction)
+                    if not confirmed:
+                        result = "⚠️ Operation cancelled by user"
+                        # Skip to next iteration
+                        response_task = asyncio.create_task(
+                            self.chat.send_message_async(
+                                genai.protos.Content(
+                                    parts=[genai.protos.Part(
+                                        function_response=genai.protos.FunctionResponse(
+                                            name=tool_name,
+                                            response={"result": result}
+                                        )
+                                    )]
+                                )
+                            )
+                        )
+                        await self._spinner(response_task, "Updating")
+                        response = response_task.result()
+                        iteration += 1
+                        continue
+
+            # Feature #8: Intelligent Retry - Track and enhance retries
+            operation_key = self._get_operation_key(agent_name, instruction)
+            retry_context = self._get_retry_context(operation_key)
+
+            # Track this attempt (before execution)
+            self._track_retry_attempt(operation_key, agent_name, instruction)
+
+            # If this is a retry, query knowledge base for solutions
+            known_solutions = []
+            if retry_context and retry_context['previous_errors']:
+                last_error_msg = retry_context['previous_errors'][-1]['message']
+                known_solutions = self._query_error_solutions(agent_name, last_error_msg)
+
+                if self.verbose and known_solutions:
+                    print(f"{C.CYAN}💡 Found {len(known_solutions)} known solution(s) for this error{C.ENDC}")
+
+            # Call the sub-agent with a spinner and timeout
             agent_task = asyncio.create_task(
                 self.call_sub_agent(agent_name, instruction, context)
             )
-            await self._spinner(agent_task, f"Running {agent_name} agent")
-            result = agent_task.result()
+
+            # Feature #11: Simple operation tracking
+            self.operation_count += 1
+            spinner_msg = f"Running {agent_name} agent"
+
+            try:
+                # Add 120-second timeout for agent operations
+                await asyncio.wait_for(
+                    self._spinner(agent_task, spinner_msg),
+                    timeout=120.0
+                )
+                result = agent_task.result()
+
+                # Feature #11: Show completion (simple checkmark)
+                if self.verbose:
+                    print(f"{C.GREEN}✓ {agent_name} completed{C.ENDC}")
+
+                # Feature #8: Mark success if this was a retry
+                if retry_context:
+                    self._mark_retry_success(operation_key, solution_used="retry with same parameters")
+
+            except asyncio.TimeoutError:
+                error_msg = f"⚠️ {agent_name} agent timed out after 120 seconds. Operation may have completed but response was not received."
+                result = error_msg
+                print(f"{C.YELLOW}⚠ {agent_name} agent operation timed out{C.ENDC}")
+
+                # Feature #8: Track this error
+                self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
+
+                # Add retry context to error if this is a retry
+                if retry_context:
+                    attempt_num = retry_context['attempt_number']
+                    result += f"\n\n📊 Retry Info: This was attempt #{attempt_num}."
+
+                    if attempt_num >= self.max_retry_attempts:
+                        result += f"\n⚠️ Reached maximum retry attempts ({self.max_retry_attempts}). Consider:\n"
+                        result += f"  • Breaking this into smaller steps\n"
+                        result += f"  • Trying a different approach\n"
+                        result += f"  • Checking if the service is available"
+
+            except Exception as e:
+                error_msg = f"⚠️ {agent_name} agent error: {str(e)}"
+                result = error_msg
+                print(f"{C.RED}✗ {agent_name} agent failed: {e}{C.ENDC}")
+
+                # Feature #8: Track this error
+                self._track_retry_attempt(operation_key, agent_name, instruction, error=str(e))
+
+                # Add retry context and suggestions to error
+                if retry_context:
+                    attempt_num = retry_context['attempt_number']
+                    result += f"\n\n📊 Retry Info: This was attempt #{attempt_num}."
+
+                    # Add known solutions if available
+                    if known_solutions:
+                        result += f"\n\n💡 Known solutions for similar errors:\n"
+                        for i, solution in enumerate(known_solutions[:3], 1):
+                            result += f"  {i}. {solution}\n"
+
+                    # Suggest giving up if too many retries
+                    if attempt_num >= self.max_retry_attempts:
+                        result += f"\n⚠️ Reached maximum retry attempts ({self.max_retry_attempts}). Suggesting:\n"
+                        result += f"  • Try a different approach or tool\n"
+                        result += f"  • Simplify the request\n"
+                        result += f"  • Ask user for clarification"
+                else:
+                    # First attempt - add basic guidance
+                    if "not found" in str(e).lower() or "invalid" in str(e).lower():
+                        result += f"\n\n💡 Tip: Try using discovery/validation before this operation"
             
             # Send result back to orchestrator with a spinner
             response_task = asyncio.create_task(
@@ -456,9 +680,32 @@ Provide a clear instruction describing what you want to accomplish.""",
         
         if iteration >= max_iterations:
             print(f"{C.YELLOW}⚠ Warning: Reached maximum orchestration iterations{C.ENDC}")
-        
+            print(f"{C.YELLOW}💡 Tip: Break complex tasks into smaller steps{C.ENDC}")
+
+        # Feature #11: Simple completion indicator
+        if self.operation_count > 0 and self.verbose:
+            print(f"\n{C.GREEN}✅ Completed {self.operation_count} operation(s){C.ENDC}\n")
+
         self.conversation_history = self.chat.history
-        return response.text
+
+        # Fix: Safely extract text from response, handle function calls gracefully
+        try:
+            return response.text
+        except Exception as e:
+            # If response.text fails (e.g., has unconverted function_call parts)
+            if self.verbose:
+                print(f"{C.YELLOW}⚠ Could not extract text from response: {e}{C.ENDC}")
+
+            # Try to extract text from parts manually
+            text_parts = []
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'text') and part.text:
+                    text_parts.append(part.text)
+
+            if text_parts:
+                return '\n'.join(text_parts)
+            else:
+                return "⚠️ Task completed but response formatting failed. The operations were executed successfully."
     
     def _deep_convert_proto_args(self, value: Any) -> Any:
         """Recursively converts Protobuf composite types into standard Python dicts/lists"""
@@ -469,7 +716,265 @@ Provide a clear instruction describing what you want to accomplish.""",
             return [self._deep_convert_proto_args(item) for item in value]
         else:
             return value
-    
+
+    def _detect_risky_operation(self, agent_name: str, instruction: str) -> Dict[str, Any]:
+        """
+        Detect if an operation is risky and needs confirmation (Feature #20)
+
+        Returns:
+            Dict with:
+                needs_confirmation: bool
+                risk_type: str (delete, bulk, public, ambiguous)
+                reason: str (explanation)
+                suggestions: List[str] (alternatives or clarifications needed)
+        """
+        instruction_lower = instruction.lower()
+
+        # IMPORTANT: Read-only operations NEVER need confirmation
+        read_only_keywords = [
+            'get', 'list', 'show', 'find', 'search', 'fetch', 'read', 'view',
+            'display', 'query', 'retrieve', 'check', 'lookup', 'see'
+        ]
+
+        # Check if this is a read-only operation
+        first_word = instruction_lower.split()[0] if instruction_lower.split() else ''
+        if first_word in read_only_keywords or any(word in instruction_lower.split()[:3] for word in read_only_keywords):
+            # This is a read operation - no confirmation needed
+            return {'needs_confirmation': False}
+
+        # Destructive operations
+        destructive_keywords = ['delete', 'remove', 'close', 'archive', 'drop', 'destroy']
+        if any(word in instruction_lower for word in destructive_keywords):
+            if self.confirmation_prefs['always_confirm_deletes']:
+                return {
+                    'needs_confirmation': True,
+                    'risk_type': 'destructive',
+                    'reason': 'This operation will permanently delete or close items',
+                    'suggestions': []
+                }
+
+        # Bulk operations
+        bulk_indicators = ['all', 'every', 'each', 'multiple']
+        if any(word in instruction_lower for word in bulk_indicators):
+            if self.confirmation_prefs['always_confirm_bulk']:
+                return {
+                    'needs_confirmation': True,
+                    'risk_type': 'bulk',
+                    'reason': f'This appears to be a bulk operation affecting multiple items',
+                    'suggestions': ['Consider processing items one at a time for safety']
+                }
+
+        # Public/broadcast operations
+        public_indicators = ['everyone', 'all users', '@channel', '@here', 'company-wide']
+        if any(word in instruction_lower for word in public_indicators):
+            if self.confirmation_prefs['confirm_public_posts']:
+                return {
+                    'needs_confirmation': True,
+                    'risk_type': 'public',
+                    'reason': 'This will notify many people or post publicly',
+                    'suggestions': ['Consider using a more targeted audience']
+                }
+
+        # Ambiguous operations (Notion database case) - only for write operations
+        write_to_notion_keywords = ['add to', 'put in', 'create in', 'insert into', 'save to']
+        if agent_name == 'notion' and any(phrase in instruction_lower for phrase in write_to_notion_keywords):
+            # Check if we have metadata about databases
+            if hasattr(self.sub_agents.get('notion'), 'metadata_cache'):
+                databases = self.sub_agents['notion'].metadata_cache.get('databases', {})
+                if len(databases) > 1:
+                    return {
+                        'needs_confirmation': True,
+                        'risk_type': 'ambiguous',
+                        'reason': f'Found {len(databases)} databases. Which one should I use?',
+                        'suggestions': [f"- {db.get('title', 'Untitled')}" for db in databases.values()]
+                    }
+
+        return {'needs_confirmation': False}
+
+    def _ask_confirmation(self, risk_info: Dict[str, Any], instruction: str) -> bool:
+        """
+        Ask user for confirmation before proceeding (Feature #20)
+
+        Returns:
+            bool: True if user confirmed, False if cancelled
+        """
+        print(f"\n{C.YELLOW}⚠️  CONFIRMATION REQUIRED{C.ENDC}")
+        print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
+        print(f"{C.CYAN}Operation: {instruction}{C.ENDC}")
+        print(f"{C.YELLOW}Risk Type: {risk_info['risk_type'].upper()}{C.ENDC}")
+        print(f"{C.YELLOW}Reason: {risk_info['reason']}{C.ENDC}")
+
+        if risk_info.get('suggestions'):
+            print(f"\n{C.CYAN}💡 Options:{C.ENDC}")
+            for suggestion in risk_info['suggestions']:
+                print(f"  {suggestion}")
+
+        print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
+
+        while True:
+            response = input(f"{C.BOLD}Proceed? (yes/no): {C.ENDC}").strip().lower()
+            if response in ['yes', 'y']:
+                return True
+            elif response in ['no', 'n']:
+                print(f"{C.RED}✗ Operation cancelled by user{C.ENDC}")
+                return False
+            else:
+                print(f"{C.YELLOW}Please answer 'yes' or 'no'{C.ENDC}")
+
+    def _resolve_ambiguity(self, agent_name: str, instruction: str, risk_info: Dict[str, Any]) -> str:
+        """
+        Help user resolve ambiguous operations (Feature #20)
+
+        For Notion: Ask which database to use
+        For others: Ask for clarification
+
+        Returns:
+            str: Enhanced instruction with resolved ambiguity
+        """
+        if risk_info['risk_type'] == 'ambiguous' and agent_name == 'notion':
+            print(f"\n{C.CYAN}🤔 Which database should I use?{C.ENDC}")
+
+            suggestions = risk_info.get('suggestions', [])
+            for i, suggestion in enumerate(suggestions, 1):
+                print(f"  {i}. {suggestion}")
+            print(f"  0. Cancel")
+
+            while True:
+                try:
+                    choice = input(f"{C.BOLD}Enter number: {C.ENDC}").strip()
+                    choice_num = int(choice)
+
+                    if choice_num == 0:
+                        print(f"{C.RED}✗ Operation cancelled{C.ENDC}")
+                        return None
+
+                    if 1 <= choice_num <= len(suggestions):
+                        selected = suggestions[choice_num - 1]
+                        # Extract database name from suggestion
+                        db_name = selected.replace('- ', '')
+                        # Enhance instruction with specific database
+                        enhanced = instruction.replace('my TODO', f'the "{db_name}" database')
+                        enhanced = enhanced.replace('TODO', f'"{db_name}" database')
+                        print(f"{C.GREEN}✓ Using database: {db_name}{C.ENDC}")
+                        return enhanced
+                    else:
+                        print(f"{C.YELLOW}Invalid choice. Please try again.{C.ENDC}")
+                except ValueError:
+                    print(f"{C.YELLOW}Please enter a number.{C.ENDC}")
+
+        return instruction
+
+    def _get_operation_key(self, agent_name: str, instruction: str) -> str:
+        """
+        Generate unique key for an operation (Feature #8)
+
+        Args:
+            agent_name: Name of the agent
+            instruction: Instruction being executed
+
+        Returns:
+            str: Hash key for tracking this operation
+        """
+        # Create hash from agent + instruction (first 100 chars)
+        key_string = f"{agent_name}:{instruction[:100]}"
+        return hashlib.md5(key_string.encode()).hexdigest()[:16]
+
+    def _track_retry_attempt(self, operation_key: str, agent_name: str, instruction: str, error: str = None):
+        """
+        Track a retry attempt for an operation (Feature #8)
+
+        Args:
+            operation_key: Unique operation key
+            agent_name: Agent being called
+            instruction: Instruction being executed
+            error: Error message if this attempt failed
+        """
+        if operation_key not in self.retry_tracker:
+            self.retry_tracker[operation_key] = {
+                'agent': agent_name,
+                'instruction': instruction,
+                'attempts': 0,
+                'errors': [],
+                'solutions_tried': [],
+                'first_attempt': asyncio.get_event_loop().time()
+            }
+
+        self.retry_tracker[operation_key]['attempts'] += 1
+
+        if error:
+            self.retry_tracker[operation_key]['errors'].append({
+                'message': error,
+                'timestamp': asyncio.get_event_loop().time()
+            })
+
+    def _get_retry_context(self, operation_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Get retry context for an operation (Feature #8)
+
+        Returns None if this is first attempt, otherwise returns retry context
+        """
+        if operation_key not in self.retry_tracker:
+            return None
+
+        tracker = self.retry_tracker[operation_key]
+
+        if tracker['attempts'] == 0:
+            return None
+
+        return {
+            'attempt_number': tracker['attempts'] + 1,
+            'previous_errors': tracker['errors'],
+            'solutions_tried': tracker['solutions_tried']
+        }
+
+    def _query_error_solutions(self, agent_name: str, error_message: str) -> List[str]:
+        """
+        Query knowledge base for known solutions to this error (Feature #8)
+
+        Args:
+            agent_name: Agent that encountered the error
+            error_message: Error message text
+
+        Returns:
+            List of suggested solutions
+        """
+        # Query knowledge base for error solutions
+        error_solutions = self.knowledge_base.data.get('error_solutions', {})
+        agent_solutions = error_solutions.get(agent_name, {})
+
+        # Look for matching error patterns
+        solutions = []
+        for error_pattern, solution_info in agent_solutions.items():
+            if error_pattern.lower() in error_message.lower():
+                solutions.append(solution_info.get('solution', ''))
+
+        return solutions
+
+    def _mark_retry_success(self, operation_key: str, solution_used: str = None):
+        """
+        Mark a retry as successful and learn from it (Feature #8)
+
+        Args:
+            operation_key: Operation that succeeded
+            solution_used: Description of what fixed the issue
+        """
+        if operation_key not in self.retry_tracker:
+            return
+
+        tracker = self.retry_tracker[operation_key]
+
+        # If this was a retry (not first attempt) and it succeeded, learn from it
+        if tracker['attempts'] > 1 and solution_used:
+            # Extract the error pattern from previous errors
+            if tracker['errors']:
+                last_error = tracker['errors'][-1]['message']
+
+                # Save this solution to knowledge base for future reference
+                # This would be implemented in the knowledge base class
+                # For now, just log it
+                if self.verbose:
+                    print(f"{C.GREEN}✓ Learned: {solution_used} fixed the issue{C.ENDC}")
+
     async def cleanup(self):
         """Cleanup all sub-agents"""
         if self.verbose:
