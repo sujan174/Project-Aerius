@@ -7,9 +7,9 @@
     "github": {
       "data": {
         "repositories": {},
-        "fetched_at": 1322815.258953416
+        "fetched_at": 1330273.589545208
       },
-      "cached_at": "2025-11-01T12:15:10.960591",
+      "cached_at": "2025-11-01T14:19:29.288450",
       "ttl_seconds": 3600
     },
     "slack": {
@@ -45,25 +45,92 @@
           }
         },
         "users": {},
-        "fetched_at": 1322814.622994791
+        "fetched_at": 1330273.835078791
       },
-      "cached_at": "2025-11-01T12:15:10.324642",
+      "cached_at": "2025-11-01T14:19:29.533984",
       "ttl_seconds": 3600
     },
     "jira": {
       "data": {
         "projects": {},
-        "fetched_at": 1322815.814716291
+        "fetched_at": 1330275.145653291
       },
-      "cached_at": "2025-11-01T12:15:11.516350",
+      "cached_at": "2025-11-01T14:19:30.844556",
       "ttl_seconds": 3600
     },
     "notion": {
       "data": {
         "databases": {},
-        "fetched_at": 1322816.11038625
+        "fetched_at": 1330274.520336625
       },
-      "cached_at": "2025-11-01T12:15:11.812019",
+      "cached_at": "2025-11-01T14:19:30.219240",
+      "ttl_seconds": 3600
+    },
+    "browser": {
+      "data": {
+        "viewports": {
+          "desktop": {
+            "width": 1920,
+            "height": 1080
+          },
+          "tablet": {
+            "width": 768,
+            "height": 1024
+          },
+          "mobile": {
+            "width": 375,
+            "height": 667
+          }
+        },
+        "user_agents": {
+          "chrome": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "firefox": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+          "safari": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+        },
+        "fetched_at": 1326254.123919
+      },
+      "cached_at": "2025-11-01T13:12:29.828342",
+      "ttl_seconds": 3600
+    },
+    "scraper": {
+      "data": {
+        "output_formats": [
+          "markdown",
+          "html",
+          "json",
+          "text",
+          "links"
+        ],
+        "common_patterns": {
+          "product": [
+            "name",
+            "price",
+            "rating",
+            "availability",
+            "description"
+          ],
+          "article": [
+            "title",
+            "author",
+            "date",
+            "content",
+            "tags"
+          ],
+          "contact": [
+            "name",
+            "email",
+            "phone",
+            "address",
+            "website"
+          ]
+        },
+        "crawl_limits": {
+          "max_depth": 3,
+          "max_pages": 100
+        },
+        "fetched_at": 1326507.369959416
+      },
+      "cached_at": "2025-11-01T13:16:43.073638",
       "ttl_seconds": 3600
     }
   },

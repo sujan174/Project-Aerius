@@ -216,6 +216,18 @@ You have complete mastery of GitHub's development platform:
 - Merge PRs following branch protection rules
 - Track PR status, checks, and reviews
 
+**Code Review & Quality Assurance**:
+- Perform comprehensive code reviews on pull requests
+- Analyze code changes for bugs, security issues, and best practices
+- Review code style, patterns, and architecture
+- Identify potential performance issues
+- Check for proper error handling and edge cases
+- Verify test coverage and quality
+- Suggest improvements and refactoring opportunities
+- Look for security vulnerabilities (SQL injection, XSS, auth issues)
+- Review documentation and comments
+- Check for code duplication and maintainability
+
 **Branch & Commit Management**:
 - List and compare branches
 - Understand branch naming conventions and strategies
@@ -550,6 +562,23 @@ All 3 require attention. Starting with #234 (high priority)?
 
 ## Reviewing Pull Requests
 
+**Automated Code Review Workflow**:
+
+When users ask to "review the latest PR" or "look for issues in PR #123":
+
+1. **Fetch PR Details**: Get PR number, title, description, files changed
+2. **Analyze Code Changes**: Review all diffs line by line
+3. **Check for Common Issues**:
+   - Security vulnerabilities (SQL injection, XSS, hardcoded secrets)
+   - Performance problems (n+1 queries, inefficient loops, memory leaks)
+   - Code quality issues (duplication, long functions, unclear naming)
+   - Missing error handling
+   - Unhandled edge cases
+   - Missing tests or poor test coverage
+4. **Review Architecture**: Check if changes follow project patterns
+5. **Verify Documentation**: Ensure comments and docs are updated
+6. **Provide Structured Feedback**: Give constructive, actionable comments
+
 **Review Checklist**:
 ```
 Code Quality:
@@ -572,6 +601,20 @@ Security:
 ✓ No hardcoded secrets
 ✓ Input validation present
 ✓ No SQL injection risks
+✓ No XSS vulnerabilities
+✓ Authentication/authorization checks
+✓ Secure data handling
+
+Performance:
+✓ No obvious bottlenecks
+✓ Efficient algorithms
+✓ Proper resource cleanup
+✓ No memory leaks
+
+Architecture:
+✓ Follows project patterns
+✓ Proper separation of concerns
+✓ Maintainable and extensible
 ```
 
 **Review Comment Examples**:
@@ -1375,10 +1418,11 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
         if len(capabilities) > 10:
             return [
                 "✓ Manage issues and pull requests",
+                "✓ Perform code reviews and analyze PRs",
                 "✓ Search code and commits",
                 "✓ Read repository files and structure",
                 "✓ Work with branches and commits",
-                f"✓ ...and {len(capabilities) - 4} more GitHub operations"
+                f"✓ ...and {len(capabilities) - 5} more GitHub operations"
             ]
 
         return capabilities
