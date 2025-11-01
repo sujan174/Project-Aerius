@@ -21,6 +21,7 @@ import os
 import sys
 import json
 import asyncio
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -139,14 +140,21 @@ class Agent(BaseAgent):
         verbose: bool = False,
         shared_context: Optional[SharedContext] = None,
         knowledge_base: Optional[WorkspaceKnowledge] = None
+    ,
+        session_logger=None
     ):
         """
         Initialize the Slack agent
 
         Args:
             verbose: Enable detailed logging for debugging (default: False)
+                    session_logger: Optional session logger for tracking operations
         """
         super().__init__()
+
+        # Session logging
+        self.logger = session_logger
+        self.agent_name = "slack"
 
         # MCP Connection Components
         self.session: ClientSession = None
@@ -1113,7 +1121,28 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
                     if self.verbose:
                         print(f"[SLACK AGENT] Arguments: {json.dumps(tool_args, indent=2)[:500]}")
 
+                # Log tool call start
+
+
+                start_time = time.time()
+
+
+
                 tool_result = await self.session.call_tool(tool_name, tool_args)
+
+
+
+                # Log tool call completion
+
+
+                duration = time.time() - start_time
+
+
+                if self.logger:
+
+
+                    self.logger.log_tool_call(self.agent_name, tool_name, duration, success=True)
+
 
                 result_content = []
                 for content in tool_result.content:
@@ -1153,7 +1182,16 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
                 else:
                     error_msg = self._format_tool_error(tool_name, str(e), tool_args)
                     self.stats.record_operation(tool_name, False, retry_count)
+
+                    # Log tool call failure
+                    if self.logger:
+                        self.logger.log_tool_call(self.agent_name, tool_name, None, success=False, error=str(e))
+
                     return None, error_msg
+
+        # Log max retries exceeded
+        if self.logger:
+            self.logger.log_tool_call(self.agent_name, tool_name, None, success=False, error="Max retries exceeded")
 
         return None, f"Max retries exceeded for {tool_name}"
 
@@ -1286,6 +1324,7 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
 
         Returns:
             Dict with validation results
+                    session_logger: Optional session logger for tracking operations
         """
         result = {
             'valid': True,

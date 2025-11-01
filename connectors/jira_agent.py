@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import asyncio
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -137,6 +138,8 @@ class Agent(BaseAgent):
         verbose: bool = False,
         shared_context: Optional[SharedContext] = None,
         knowledge_base: Optional[WorkspaceKnowledge] = None
+    ,
+        session_logger=None
     ):
         """
         Initialize the Jira agent
@@ -145,8 +148,13 @@ class Agent(BaseAgent):
             verbose: Enable detailed logging for debugging (default: False)
             shared_context: Shared context for cross-agent coordination (optional)
             knowledge_base: Workspace knowledge base for learning (optional)
+                    session_logger: Optional session logger for tracking operations
         """
         super().__init__()
+
+        # Session logging
+        self.logger = session_logger
+        self.agent_name = "jira"
 
         # MCP Connection Components
         self.session: ClientSession = None
@@ -503,6 +511,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Configured StdioServerParameters for Docker
+                    session_logger: Optional session logger for tracking operations
         """
         return StdioServerParameters(
             command="docker",
@@ -527,6 +536,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Args:
             server_params: Server configuration parameters
+                    session_logger: Optional session logger for tracking operations
         """
         self.stdio_context = stdio_client(server_params)
         stdio, write = await self.stdio_context.__aenter__()
@@ -708,6 +718,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Natural language response with results
+                    session_logger: Optional session logger for tracking operations
         """
         if not self.initialized:
             return self._format_error(Exception("Jira agent not initialized. Please restart the system."))
@@ -810,6 +821,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Instruction with references resolved
+                    session_logger: Optional session logger for tracking operations
         """
         # Check for common ambiguous terms
         ambiguous_terms = ['it', 'that', 'this', 'the issue', 'the ticket']
@@ -861,6 +873,7 @@ Remember: You're not just executing commands—you're helping users manage their
         Args:
             response: LLM response text
             instruction: Original instruction
+                    session_logger: Optional session logger for tracking operations
         """
         import re
 
@@ -908,6 +921,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Operation type string
+                    session_logger: Optional session logger for tracking operations
         """
         instruction_lower = instruction.lower()
 
@@ -933,6 +947,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Function call object or None if no call present
+                    session_logger: Optional session logger for tracking operations
         """
         parts = response.candidates[0].content.parts
         has_function_call = any(
@@ -964,6 +979,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Tuple of (result_text, error_message). One will be None.
+                    session_logger: Optional session logger for tracking operations
         """
         retry_count = 0
         delay = RetryConfig.INITIAL_DELAY
@@ -978,7 +994,22 @@ Remember: You're not just executing commands—you're helping users manage their
                         print(f"[JIRA AGENT] Arguments: {json.dumps(tool_args, indent=2)[:500]}")
 
                 # Execute tool call
+                # Log tool call start
+
+                start_time = time.time()
+
+
                 tool_result = await self.session.call_tool(tool_name, tool_args)
+
+
+                # Log tool call completion
+
+                duration = time.time() - start_time
+
+                if self.logger:
+
+                    self.logger.log_tool_call(self.agent_name, tool_name, duration, success=True)
+
 
                 # Extract result text
                 result_content = []
@@ -1029,7 +1060,15 @@ Remember: You're not just executing commands—you're helping users manage their
                     # Record failure
                     self.stats.record_operation(tool_name, False, retry_count)
 
+                    # Log tool call failure
+                    if self.logger:
+                        self.logger.log_tool_call(self.agent_name, tool_name, None, success=False, error=str(e))
+
                     return None, error_msg
+
+        # Log max retries exceeded
+        if self.logger:
+            self.logger.log_tool_call(self.agent_name, tool_name, None, success=False, error="Max retries exceeded")
 
         # Should never reach here, but just in case
         return None, f"Max retries exceeded for {tool_name}"
@@ -1052,6 +1091,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             LLM response
+                    session_logger: Optional session logger for tracking operations
         """
         if result_text is not None:
             # Success case
@@ -1084,6 +1124,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             ErrorType classification
+                    session_logger: Optional session logger for tracking operations
         """
         error_lower = error.lower()
 
@@ -1113,6 +1154,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Formatted, user-friendly error message
+                    session_logger: Optional session logger for tracking operations
         """
         error_type = self._classify_error(error)
 
@@ -1212,6 +1254,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Dict with validation results
+                    session_logger: Optional session logger for tracking operations
         """
         result = {
             'valid': True,
@@ -1302,6 +1345,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Gemini-compatible function declaration
+                    session_logger: Optional session logger for tracking operations
         """
         parameters_schema = protos.Schema(type_=protos.Type.OBJECT)
 
@@ -1329,6 +1373,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Protobuf schema object
+                    session_logger: Optional session logger for tracking operations
         """
         schema_pb = protos.Schema()
 
@@ -1374,6 +1419,7 @@ Remember: You're not just executing commands—you're helping users manage their
 
         Returns:
             Standard Python dict, list, or primitive
+                    session_logger: Optional session logger for tracking operations
         """
         type_str = str(type(value))
 

@@ -21,6 +21,7 @@ Version: 1.0
 
 import os
 import asyncio
+import time
 import json
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
@@ -92,15 +93,22 @@ class Agent(BaseAgent):
     - Operation tracking and statistics
     """
 
-    def __init__(self, verbose: bool = False, shared_context: Optional[SharedContext] = None):
+    def __init__(self, verbose: bool = False, shared_context: Optional[SharedContext] = None,
+        session_logger=None
+    ):
         """
         Initialize Browser Agent
 
         Args:
             verbose: Enable detailed logging
             shared_context: Optional shared context for cross-agent coordination
+                    session_logger: Optional session logger for tracking operations
         """
         super().__init__()
+
+        # Session logging
+        self.logger = session_logger
+        self.agent_name = "browser"
 
         self.verbose = verbose
         self.initialized = False
@@ -319,6 +327,7 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
 
         Args:
             server_params: Server configuration parameters
+                    session_logger: Optional session logger for tracking operations
         """
         self.stdio_context = stdio_client(server_params)
         stdio, write = await self.stdio_context.__aenter__()
@@ -429,6 +438,7 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
 
         Returns:
             str: Result of the browser operation
+                    session_logger: Optional session logger for tracking operations
         """
         if not self.initialized:
             return self._format_error(Exception("Browser agent not initialized"))
@@ -584,6 +594,7 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
 
         Returns:
             Response from tool execution or error dict
+                    session_logger: Optional session logger for tracking operations
         """
         try:
             if self.verbose or retry_count > 0:
@@ -675,6 +686,7 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
 
         Returns:
             Dict with validation results
+                    session_logger: Optional session logger for tracking operations
         """
         result = {
             'valid': True,

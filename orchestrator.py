@@ -20,6 +20,12 @@ from llms.gemini_flash import GeminiFlash
 from connectors.agent_intelligence import WorkspaceKnowledge, SharedContext
 from connectors.agent_logger import SessionLogger
 
+# Import advanced intelligence system
+from intelligence import (
+    IntentClassifier, EntityExtractor, TaskDecomposer,
+    ConfidenceScorer, ConversationContextManager
+)
+
 # Import terminal UI
 from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
 
@@ -81,6 +87,9 @@ class OrchestratorAgent:
             'confirm_ambiguous': True
         }
 
+        # Track confirmations to avoid asking multiple times for same operation
+        self.confirmed_operations: set = set()
+
         # Feature #8: Intelligent Retry tracking
         self.retry_tracker: Dict[str, Dict[str, Any]] = {}  # Track retry attempts per operation
         self.max_retry_attempts = 3  # Maximum retries before suggesting alternative
@@ -94,8 +103,22 @@ class OrchestratorAgent:
         # Terminal UI
         self.ui = TerminalUI(verbose=self.verbose)
 
+        # Advanced Intelligence System (Phase 1)
+        self.intent_classifier = IntentClassifier(verbose=self.verbose)
+        self.entity_extractor = EntityExtractor(verbose=self.verbose)
+        self.task_decomposer = TaskDecomposer(
+            agent_capabilities=self.agent_capabilities,
+            verbose=self.verbose
+        )
+        self.confidence_scorer = ConfidenceScorer(verbose=self.verbose)
+        self.context_manager = ConversationContextManager(
+            session_id=self.session_id,
+            verbose=self.verbose
+        )
+
         if self.verbose:
             print(f"{C.CYAN}🧠 Intelligence enabled: Session {self.session_id[:8]}...{C.ENDC}")
+            print(f"{C.CYAN}📊 Advanced Intelligence: Intent, Entity, Task, Confidence, Context{C.ENDC}")
             print(f"{C.CYAN}📝 Logging to: {self.session_logger.get_log_path()}{C.ENDC}")
         
         self.system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
@@ -481,7 +504,69 @@ Provide a clear instruction describing what you want to accomplish.""",
             if self.verbose:
                 traceback.print_exc()
             return error_msg
-    
+
+    def _process_with_intelligence(self, user_message: str) -> Dict:
+        """
+        Process user message with advanced intelligence
+
+        Returns intelligence analysis including intents, entities, confidence, etc.
+        """
+        # 1. Classify intent
+        intents = self.intent_classifier.classify(user_message)
+
+        # 2. Extract entities
+        context_dict = self.context_manager.get_relevant_context(user_message)
+        entities = self.entity_extractor.extract(user_message, context=context_dict)
+
+        # 3. Score confidence
+        confidence = self.confidence_scorer.score_overall(
+            message=user_message,
+            intents=intents,
+            entities=entities
+        )
+
+        # 4. Update conversation context
+        self.context_manager.add_turn(
+            role='user',
+            message=user_message,
+            intents=intents,
+            entities=entities
+        )
+
+        # 5. Resolve references if needed (but don't modify message for now)
+        # Note: Reference resolution is tracked in context but we let the LLM
+        # handle the actual interpretation with context provided
+        resolved_message = user_message
+
+        # Log resolved references for debugging
+        if self.verbose:
+            for word in user_message.split():
+                resolution = self.context_manager.resolve_reference(word)
+                if resolution:
+                    entity_id, entity = resolution
+                    print(f"[INTELLIGENCE] Can resolve '{word}' → {entity.value}")
+
+        # 6. Build intelligence summary
+        intelligence = {
+            'intents': intents,
+            'entities': entities,
+            'confidence': confidence,
+            'resolved_message': resolved_message,
+            'context': context_dict,
+            'primary_intent': self.intent_classifier.get_primary_intent(intents),
+            'action_recommendation': self.confidence_scorer.get_action_recommendation(confidence)
+        }
+
+        # 7. Log intelligence insights
+        if self.verbose:
+            print(f"\n{C.CYAN}🧠 Intelligence Analysis:{C.ENDC}")
+            print(f"  Intents: {[str(i) for i in intents[:3]]}")
+            print(f"  Entities: {len(entities)} found")
+            print(f"  Confidence: {confidence}")
+            print(f"  Recommendation: {intelligence['action_recommendation'][0]}")
+
+        return intelligence
+
     async def process_message(self, user_message: str) -> str:
         """Process a user message with orchestration"""
         
@@ -512,8 +597,35 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Reset operation counter for this request
         self.operation_count = 0
 
+        # Reset confirmed operations for this request
+        # (confirmations should only apply within a single user message)
+        self.confirmed_operations.clear()
+
+        # Process with intelligence
+        intelligence = self._process_with_intelligence(user_message)
+
+        # Use resolved message if references were resolved
+        message_to_send = intelligence.get('resolved_message', user_message)
+
+        # Check confidence and handle accordingly
+        action, explanation = intelligence['action_recommendation']
+
+        if action == 'clarify' and not self.verbose:
+            # Low confidence - ask clarifying questions
+            clarifications = self.confidence_scorer.suggest_clarifications(
+                intelligence['confidence'],
+                intelligence['intents']
+            )
+            if clarifications:
+                self.ui.print_response("\n".join(clarifications[:2]))
+                return "I need more information to proceed. " + clarifications[0]
+
+        # Log intelligence insights
+        if self.verbose:
+            print(f"{C.CYAN}📊 Using intelligence: {explanation}{C.ENDC}")
+
         # Create and run the initial send task with a spinner
-        send_task = asyncio.create_task(self.chat.send_message(user_message))
+        send_task = asyncio.create_task(self.chat.send_message(message_to_send))
         await self._spinner(send_task, "Thinking")
         llm_response = send_task.result()
 
@@ -567,39 +679,58 @@ Provide a clear instruction describing what you want to accomplish.""",
             risk_info = self._detect_risky_operation(agent_name, instruction)
 
             if risk_info.get('needs_confirmation'):
-                # Handle ambiguous operations (resolve before confirming)
-                if risk_info['risk_type'] == 'ambiguous':
-                    enhanced_instruction = self._resolve_ambiguity(agent_name, instruction, risk_info)
-                    if enhanced_instruction is None:
-                        # User cancelled during ambiguity resolution
-                        result = "⚠️ Operation cancelled by user"
-                        # Skip to next iteration
-                        function_result = {'name': tool_name, 'result': result}
-                        response_task = asyncio.create_task(
-                            self.chat.send_message_with_functions("", function_result)
-                        )
-                        await self._spinner(response_task, "Updating")
-                        llm_response = response_task.result()
-                        response = llm_response.metadata.get('response_object') if llm_response.metadata else None
-                        iteration += 1
-                        continue
-                    instruction = enhanced_instruction
+                # Create operation signature for tracking
+                operation_sig = self._create_operation_signature(agent_name, instruction, risk_info['risk_type'])
 
-                # Ask for confirmation for other risky operations
-                if risk_info['risk_type'] != 'ambiguous':
-                    confirmed = self._ask_confirmation(risk_info, instruction)
-                    if not confirmed:
-                        result = "⚠️ Operation cancelled by user"
-                        # Skip to next iteration
-                        function_result = {'name': tool_name, 'result': result}
-                        response_task = asyncio.create_task(
-                            self.chat.send_message_with_functions("", function_result)
-                        )
-                        await self._spinner(response_task, "Updating")
-                        llm_response = response_task.result()
-                        response = llm_response.metadata.get('response_object') if llm_response.metadata else None
-                        iteration += 1
-                        continue
+                # Check if we already confirmed this operation
+                if operation_sig in self.confirmed_operations:
+                    if self.verbose:
+                        print(f"{C.GREEN}✓ Operation already confirmed, proceeding...{C.ENDC}")
+                else:
+                    # Handle ambiguous operations (resolve before confirming)
+                    if risk_info['risk_type'] == 'ambiguous':
+                        enhanced_instruction = self._resolve_ambiguity(agent_name, instruction, risk_info)
+                        if enhanced_instruction is None:
+                            # User cancelled during ambiguity resolution
+                            result = "⚠️ Operation cancelled by user"
+                            # Skip to next iteration
+                            function_result = {'name': tool_name, 'result': result}
+                            response_task = asyncio.create_task(
+                                self.chat.send_message_with_functions("", function_result)
+                            )
+                            await self._spinner(response_task, "Updating")
+                            llm_response = response_task.result()
+                            response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+                            iteration += 1
+                            continue
+                        instruction = enhanced_instruction
+                        # Update signature with enhanced instruction
+                        operation_sig = self._create_operation_signature(agent_name, instruction, risk_info['risk_type'])
+                        # Track ambiguous operation as confirmed (user already selected option)
+                        self.confirmed_operations.add(operation_sig)
+                        if self.verbose:
+                            print(f"{C.CYAN}📝 Ambiguous operation resolved and tracked{C.ENDC}")
+
+                    # Ask for confirmation for other risky operations
+                    if risk_info['risk_type'] != 'ambiguous':
+                        confirmed = self._ask_confirmation(risk_info, instruction)
+                        if not confirmed:
+                            result = "⚠️ Operation cancelled by user"
+                            # Skip to next iteration
+                            function_result = {'name': tool_name, 'result': result}
+                            response_task = asyncio.create_task(
+                                self.chat.send_message_with_functions("", function_result)
+                            )
+                            await self._spinner(response_task, "Updating")
+                            llm_response = response_task.result()
+                            response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+                            iteration += 1
+                            continue
+
+                    # Track this confirmation
+                    self.confirmed_operations.add(operation_sig)
+                    if self.verbose:
+                        print(f"{C.CYAN}📝 Operation confirmed and tracked{C.ENDC}")
 
             # Feature #8: Intelligent Retry - Track and enhance retries
             operation_key = self._get_operation_key(agent_name, instruction)
@@ -755,6 +886,48 @@ Provide a clear instruction describing what you want to accomplish.""",
         else:
             return value
 
+    def _create_operation_signature(self, agent_name: str, instruction: str, risk_type: str) -> str:
+        """
+        Create a unique signature for an operation to track confirmations.
+
+        This prevents asking for confirmation multiple times for the same operation.
+        The signature is based on agent, action type, and key entities (not exact instruction).
+
+        Args:
+            agent_name: Name of the agent
+            instruction: The instruction text
+            risk_type: Type of risk (destructive, bulk, public, ambiguous)
+
+        Returns:
+            A signature string for tracking this operation
+        """
+        import hashlib
+
+        # Normalize instruction to extract intent
+        instruction_lower = instruction.lower().strip()
+
+        # Extract action verb (first meaningful word)
+        action_words = ['create', 'delete', 'update', 'remove', 'add', 'send', 'notify',
+                       'close', 'archive', 'change', 'modify', 'edit']
+        action = 'unknown'
+        for word in action_words:
+            if word in instruction_lower:
+                action = word
+                break
+
+        # Create signature from: agent + action + risk_type
+        # This allows same action to be confirmed once, but different actions to be asked separately
+        sig_base = f"{agent_name}:{action}:{risk_type}"
+
+        # For more specific tracking, include a hash of key instruction parts
+        # This prevents "delete KAN-20" and "delete KAN-30" from being treated as same
+        # But allows repeated calls with exact same instruction to skip confirmation
+        instruction_hash = hashlib.md5(instruction_lower.encode()).hexdigest()[:8]
+
+        signature = f"{sig_base}:{instruction_hash}"
+
+        return signature
+
     def _detect_risky_operation(self, agent_name: str, instruction: str) -> Dict[str, Any]:
         """
         Detect if an operation is risky and needs confirmation (Feature #20)
@@ -766,6 +939,8 @@ Provide a clear instruction describing what you want to accomplish.""",
                 reason: str (explanation)
                 suggestions: List[str] (alternatives or clarifications needed)
         """
+        import re
+
         instruction_lower = instruction.lower()
 
         # IMPORTANT: Read-only operations NEVER need confirmation
@@ -780,9 +955,13 @@ Provide a clear instruction describing what you want to accomplish.""",
             # This is a read operation - no confirmation needed
             return {'needs_confirmation': False}
 
-        # Destructive operations
+        # Destructive operations - use word boundaries to avoid false matches
+        # (e.g., "disclose" should not match "close")
         destructive_keywords = ['delete', 'remove', 'close', 'archive', 'drop', 'destroy']
-        if any(word in instruction_lower for word in destructive_keywords):
+
+        # Check for whole words only using word boundaries
+        destructive_pattern = r'\b(' + '|'.join(destructive_keywords) + r')\b'
+        if re.search(destructive_pattern, instruction_lower):
             if self.confirmation_prefs['always_confirm_deletes']:
                 return {
                     'needs_confirmation': True,
@@ -791,20 +970,66 @@ Provide a clear instruction describing what you want to accomplish.""",
                     'suggestions': []
                 }
 
-        # Bulk operations
-        bulk_indicators = ['all', 'every', 'each', 'multiple']
-        if any(word in instruction_lower for word in bulk_indicators):
+        # Bulk operations - but be smarter about detection
+        # Only consider it bulk if it's actually acting on multiple items
+        bulk_action_patterns = [
+            'delete all', 'remove all', 'update all', 'change all',
+            'create multiple', 'add multiple', 'send to all', 'notify everyone'
+        ]
+
+        is_bulk = any(pattern in instruction_lower for pattern in bulk_action_patterns)
+
+        # Additional check: if instruction contains numbers > 5, might be bulk
+        numbers = re.findall(r'\b(\d+)\b', instruction_lower)
+        if numbers and any(int(n) > 5 for n in numbers if n.isdigit()):
+            # Check if it's about creating/updating that many items
+            if any(word in instruction_lower for word in ['create', 'delete', 'update', 'add', 'remove']):
+                is_bulk = True
+
+        # Skip confirmation for bulk READ operations
+        if is_bulk:
+            bulk_read_keywords = ['review', 'analyze', 'check', 'scan', 'inspect', 'examine', 'list', 'get', 'show']
+            is_bulk_read = any(word in instruction_lower for word in bulk_read_keywords)
+
+            if is_bulk_read:
+                return {'needs_confirmation': False}
+
+            # Bulk write operation - needs confirmation
             if self.confirmation_prefs['always_confirm_bulk']:
                 return {
                     'needs_confirmation': True,
                     'risk_type': 'bulk',
-                    'reason': f'This appears to be a bulk operation affecting multiple items',
+                    'reason': f'This will affect multiple items',
                     'suggestions': ['Consider processing items one at a time for safety']
                 }
 
-        # Public/broadcast operations
+        # Public/broadcast operations - use word boundaries for exact matches
+        # Note: @channel and @here are exact matches, not word patterns
         public_indicators = ['everyone', 'all users', '@channel', '@here', 'company-wide']
-        if any(word in instruction_lower for word in public_indicators):
+
+        # Check each indicator (special handling for @ symbols)
+        is_public = False
+        for indicator in public_indicators:
+            if indicator.startswith('@'):
+                # For @mentions, do exact substring match
+                if indicator in instruction_lower:
+                    is_public = True
+                    break
+            else:
+                # For phrases with spaces, escape words individually and join with \s+
+                if ' ' in indicator:
+                    words = indicator.split()
+                    escaped_words = [re.escape(word) for word in words]
+                    pattern = r'\b' + r'\s+'.join(escaped_words) + r'\b'
+                else:
+                    # Single word, just escape and add word boundaries
+                    pattern = r'\b' + re.escape(indicator) + r'\b'
+
+                if re.search(pattern, instruction_lower):
+                    is_public = True
+                    break
+
+        if is_public:
             if self.confirmation_prefs['confirm_public_posts']:
                 return {
                     'needs_confirmation': True,
@@ -836,15 +1061,20 @@ Provide a clear instruction describing what you want to accomplish.""",
         Returns:
             bool: True if user confirmed, False if cancelled
         """
+        # Shorten instruction for display - don't show full code
+        display_instruction = instruction[:200]
+        if len(instruction) > 200:
+            display_instruction += "... (truncated)"
+
         print(f"\n{C.YELLOW}⚠️  CONFIRMATION REQUIRED{C.ENDC}")
         print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
-        print(f"{C.CYAN}Operation: {instruction}{C.ENDC}")
+        print(f"{C.CYAN}Operation: {display_instruction}{C.ENDC}")
         print(f"{C.YELLOW}Risk Type: {risk_info['risk_type'].upper()}{C.ENDC}")
         print(f"{C.YELLOW}Reason: {risk_info['reason']}{C.ENDC}")
 
         if risk_info.get('suggestions'):
             print(f"\n{C.CYAN}💡 Options:{C.ENDC}")
-            for suggestion in risk_info['suggestions']:
+            for suggestion in risk_info['suggestions'][:5]:  # Max 5 suggestions
                 print(f"  {suggestion}")
 
         print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
