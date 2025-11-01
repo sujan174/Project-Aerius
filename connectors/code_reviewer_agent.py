@@ -82,7 +82,7 @@ class Agent(BaseAgent):
     - Test coverage analysis
     """
 
-    def __init__(self, verbose: bool = False, shared_context: Optional[SharedContext] = None, llm: Optional[BaseLLM] = None, **kwargs):
+    def __init__(self, verbose: bool = False, shared_context: Optional[SharedContext] = None, llm: Optional[BaseLLM] = None, session_logger=None, **kwargs):
         """
         Initialize Code Reviewer Agent
 
@@ -90,11 +90,14 @@ class Agent(BaseAgent):
             verbose: Enable detailed logging
             shared_context: Optional shared context for cross-agent coordination
             llm: Optional LLM instance (defaults to Gemini Flash)
+            session_logger: Optional session logger for tracking operations
         """
         super().__init__()
 
         self.verbose = verbose
         self.initialized = False
+        self.agent_name = "code_reviewer"  # For logging
+        self.logger = session_logger  # Session logger
 
         # LLM abstraction for code analysis
         if llm is None:
@@ -498,14 +501,24 @@ Remember: Your goal is to help developers ship secure, performant, and maintaina
             # Check shared context for code from other agents
             context_from_other_agents = {}
             if self.shared_context:
-                context_from_other_agents = self.shared_context.get_latest_context()
+                # Get recent resources from other agents in this session
+                recent_resources = self.shared_context.get_recent_resources(limit=5)
+                if recent_resources:
+                    context_from_other_agents = {
+                        'resources': recent_resources,
+                        'count': len(recent_resources)
+                    }
 
             if context_from_other_agents and self.verbose:
-                print(f"[CODE REVIEWER] Found code context from other agents")
+                print(f"[CODE REVIEWER] Found context from other agents: {context_from_other_agents.get('count', 0)} resources")
 
             # Start analysis with LLM
             if self.verbose:
                 print(f"[CODE REVIEWER] Analyzing code...")
+
+            # Log tool execution start
+            if self.logger:
+                self.logger.log_tool_call(self.agent_name, "llm_code_analysis")
 
             llm_response = await self.llm.generate_content(instruction)
 
@@ -515,6 +528,14 @@ Remember: Your goal is to help developers ship secure, performant, and maintaina
             # Parse issues from review (simple extraction for stats)
             issues = self._extract_issue_counts(review_text)
             self.stats.record_success(issues)
+
+            # Log tool completion
+            if self.logger:
+                self.logger.log_tool_call(
+                    self.agent_name,
+                    "llm_code_analysis",
+                    success=True
+                )
 
             if self.verbose:
                 print(f"[CODE REVIEWER] Review complete. {self.stats.get_summary()}")
@@ -528,6 +549,16 @@ Remember: Your goal is to help developers ship secure, performant, and maintaina
 
         except Exception as e:
             self.stats.record_failure()
+
+            # Log failure
+            if self.logger:
+                self.logger.log_tool_call(
+                    self.agent_name,
+                    "llm_code_analysis",
+                    success=False,
+                    error=str(e)
+                )
+
             return self._format_error(e)
 
     def _extract_issue_counts(self, review_text: str) -> Dict[str, int]:

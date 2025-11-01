@@ -18,6 +18,7 @@ from llms.gemini_flash import GeminiFlash
 
 # Import intelligence components for smart agents
 from connectors.agent_intelligence import WorkspaceKnowledge, SharedContext
+from connectors.agent_logger import SessionLogger
 
 load_dotenv()
 
@@ -84,8 +85,12 @@ class OrchestratorAgent:
         # Feature #11: Simple progress tracking for streaming
         self.operation_count = 0  # Track number of operations in current request
 
+        # Session logging
+        self.session_logger = SessionLogger(log_dir="logs", session_id=self.session_id)
+
         if self.verbose:
             print(f"{C.CYAN}🧠 Intelligence enabled: Session {self.session_id[:8]}...{C.ENDC}")
+            print(f"{C.CYAN}📝 Logging to: {self.session_logger.get_log_path()}{C.ENDC}")
         
         self.system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
 
@@ -231,12 +236,13 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
             # Try to initialize with intelligence components (smart agents) or fallback to legacy
             try:
-                # Try with full intelligence support + LLM abstraction
+                # Try with full intelligence support + LLM abstraction + logging
                 agent_instance = agent_class(
                     verbose=self.verbose,
                     shared_context=self.shared_context,
                     knowledge_base=self.knowledge_base,
-                    llm=self.llm
+                    llm=self.llm,
+                    session_logger=self.session_logger
                 )
             except TypeError:
                 # Fallback: Try without LLM
@@ -441,8 +447,18 @@ Provide a clear instruction describing what you want to accomplish.""",
             if context_str:
                 full_instruction = f"Context from previous steps:\n{context_str}\n\nTask: {instruction}"
 
+            # Log message to agent
+            self.session_logger.log_message_to_agent(agent_name, full_instruction)
+
             # Execute the agent
+            start_time = asyncio.get_event_loop().time()
             result = await agent.execute(full_instruction)
+            duration = asyncio.get_event_loop().time() - start_time
+
+            # Log response from agent
+            success = not result.startswith("⚠️") and not result.startswith("Error")
+            error = result if not success else None
+            self.session_logger.log_message_from_agent(agent_name, result, success, error)
 
             # Update health status on success
             if agent_name in self.agent_health:
@@ -1006,10 +1022,10 @@ Provide a clear instruction describing what you want to accomplish.""",
                     print(f"{C.GREEN}✓ Learned: {solution_used} fixed the issue{C.ENDC}")
 
     async def cleanup(self):
-        """Cleanup all sub-agents"""
+        """Cleanup all sub-agents and close session logger"""
         if self.verbose:
             print(f"\n{C.YELLOW}Shutting down agents...{C.ENDC}")
-            
+
         for agent_name, agent in list(self.sub_agents.items()):
             try:
                 if hasattr(agent, 'cleanup'):
@@ -1019,6 +1035,12 @@ Provide a clear instruction describing what you want to accomplish.""",
             except Exception as e:
                 # Always print errors
                 print(f"{C.RED}  ✗ Error shutting down {agent_name}: {e}{C.ENDC}")
+
+        # Close session logger and generate summary
+        if hasattr(self, 'session_logger'):
+            self.session_logger.close()
+            if self.verbose:
+                print(f"{C.GREEN}  ✓ Session log saved: {self.session_logger.get_log_path()}{C.ENDC}")
     
     async def run_interactive(self):
         """Run interactive chat session"""

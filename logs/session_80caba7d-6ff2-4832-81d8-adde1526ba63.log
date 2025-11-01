@@ -1,0 +1,64 @@
+================================================================================
+AGENT SESSION LOG
+================================================================================
+Session ID: 80caba7d-6ff2-4832-81d8-adde1526ba63
+Started: 2025-11-01 17:05:50
+Log File: logs/session_80caba7d-6ff2-4832-81d8-adde1526ba63.log
+================================================================================
+
+[+30.35s] → github
+  Message: Get the content of the file 'index.js' from the 'main' branch of the repository ...
+  Length: 113 chars
+[+36.80s] ← github ✓
+  Response: The content of `index.js` from the `main` branch of the `sujan174/Image-Super-Re...
+  Length: 1300 chars
+[+41.08s] → code_reviewer
+  Message: 
+// Developed by Sandesh K
+
+// Load environment variables and dependencies
+requi...
+  Length: 1177 chars
+[+41.08s] 🔧 code_reviewer → llm_code_analysis ✗
+  Error: 'SharedContext' object has no attribute 'get_latest_context'
+[+41.08s] ← code_reviewer ✗
+  Response: ⚠️ Code Reviewer error: 'SharedContext' object has no attribute 'get_latest_cont...
+  Length: 84 chars
+  Error: ⚠️ Code Reviewer error: 'SharedContext' object has no attribute 'get_latest_context'
+
+================================================================================
+SESSION SUMMARY
+================================================================================
+Duration: 8m 46.8s
+Total Messages: 4
+
+AGENT METRICS:
+--------------------------------------------------------------------------------
+
+CODE_REVIEWER:
+  Messages: 1 received, 1 sent
+  Tools: 1 called (0 ✓, 1 ✗)
+  Success Rate: 0.0%
+  Duration: 0.00s
+  Errors: 2
+
+GITHUB:
+  Messages: 1 received, 1 sent
+  Tools: 0 called (0 ✓, 0 ✗)
+  Success Rate: 0.0%
+  Duration: 0.00s
+
+MESSAGE FLOW:
+--------------------------------------------------------------------------------
+  Time        code_revie  github    
+  ----------------------------------
+    30.4s                →         
+    36.8s                ←         
+    41.1s    →                     
+    41.1s    ←                     
+
+TOOL USAGE:
+--------------------------------------------------------------------------------
+  llm_code_analysis: 1 call(s)
+
+================================================================================

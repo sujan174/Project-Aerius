@@ -39,6 +39,12 @@ from connectors.agent_intelligence import (
     SharedContext,
     ProactiveAssistant
 )
+from connectors.mcp_config import (
+    MCPTimeouts,
+    MCPRetryConfig,
+    MCPRetryableErrors,
+    MCPErrorMessages
+)
 
 
 # ============================================================================
@@ -62,7 +68,16 @@ class RetryConfig:
         "too many requests",
         "503",
         "502",
-        "504"
+        "504",
+        "sse error",           # SSE-specific errors
+        "sseerror",
+        "body timeout",        # Common in SSE connections
+        "terminated",          # Connection terminated
+        "stream closed",
+        "connection closed",
+        "ECONNRESET",          # TCP connection reset
+        "ETIMEDOUT",           # Connection timeout
+        "fetch failed"         # Fetch API failures
     ]
 
 
@@ -576,71 +591,135 @@ Remember: You're not just executing commands—you're helping users build a powe
 
     async def initialize(self):
         """
-        Connect to Notion MCP server
+        Connect to Notion MCP server with timeout and retry handling
 
         Raises:
             ValueError: If required environment variables are missing
-            RuntimeError: If connection or initialization fails
+            RuntimeError: If connection or initialization fails after retries
         """
-        try:
-            if self.verbose:
-                print(f"[NOTION AGENT] Initializing connection to Notion MCP server")
+        max_retries = 2
+        connection_timeout = 30.0  # 30 seconds for initial connection
 
-            # Notion's official MCP Remote Proxy
-            # Auth is handled via a browser popup (OAuth)
+        for attempt in range(max_retries + 1):
+            try:
+                if self.verbose:
+                    retry_msg = f" (attempt {attempt + 1}/{max_retries + 1})" if attempt > 0 else ""
+                    print(f"[NOTION AGENT] Initializing connection to Notion MCP server{retry_msg}")
 
-            # Prepare environment variables to suppress debug output when not in verbose mode
-            env_vars = {**os.environ}
-            if not self.verbose:
-                # Suppress debug output from mcp-remote
-                env_vars["DEBUG"] = ""
-                env_vars["NODE_ENV"] = "production"
-                env_vars["MCP_DEBUG"] = "0"
+                # Notion's official MCP Remote Proxy
+                # Auth is handled via a browser popup (OAuth)
 
-            server_params = StdioServerParameters(
-                command="npx",
-                args=["-y", "mcp-remote", "https://mcp.notion.com/sse"],
-                env=env_vars
-            )
+                # Prepare environment variables to suppress debug output when not in verbose mode
+                env_vars = {**os.environ}
+                if not self.verbose:
+                    # Suppress debug output from mcp-remote
+                    env_vars["DEBUG"] = ""
+                    env_vars["NODE_ENV"] = "production"
+                    env_vars["MCP_DEBUG"] = "0"
 
-            self.stdio_context = stdio_client(server_params)
-            stdio, write = await self.stdio_context.__aenter__()
-            self.session = ClientSession(stdio, write)
+                server_params = StdioServerParameters(
+                    command="npx",
+                    args=["-y", "mcp-remote", "https://mcp.notion.com/sse"],
+                    env=env_vars
+                )
 
-            await self.session.__aenter__()
-            await self.session.initialize()
+                # Wrap connection with timeout
+                try:
+                    self.stdio_context = stdio_client(server_params)
+                    stdio, write = await asyncio.wait_for(
+                        self.stdio_context.__aenter__(),
+                        timeout=connection_timeout
+                    )
+                    self.session = ClientSession(stdio, write)
 
-            # Load tools
-            tools_list = await self.session.list_tools()
-            self.available_tools = tools_list.tools
+                    await asyncio.wait_for(
+                        self.session.__aenter__(),
+                        timeout=10.0
+                    )
+                    await asyncio.wait_for(
+                        self.session.initialize(),
+                        timeout=10.0
+                    )
 
-            # Convert to Gemini format
-            gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
+                    # Load tools with timeout
+                    tools_list = await asyncio.wait_for(
+                        self.session.list_tools(),
+                        timeout=10.0
+                    )
+                    self.available_tools = tools_list.tools
 
-            # Create model
-            self.model = genai.GenerativeModel(
-                'models/gemini-2.5-flash',
-                system_instruction=self.system_prompt,
-                tools=gemini_tools
-            )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"Connection timeout after {connection_timeout}s. "
+                        "The Notion MCP server may be slow or unavailable."
+                    )
 
-            self.initialized = True
+                # Convert to Gemini format
+                gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
 
-            # Feature #1: Prefetch workspace metadata for faster operations
-            await self._prefetch_metadata()
+                # Create model
+                self.model = genai.GenerativeModel(
+                    'models/gemini-2.5-flash',
+                    system_instruction=self.system_prompt,
+                    tools=gemini_tools
+                )
 
-            if self.verbose:
-                print(f"[NOTION AGENT] Initialization complete. {len(self.available_tools)} tools available.")
+                self.initialized = True
 
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to initialize Notion agent: {e}\n"
-                "Troubleshooting steps:\n"
-                "1. Ensure npx is installed (npm install -g npx)\n"
-                "2. Check your internet connection\n"
-                "3. You may need to authenticate via browser popup when prompted\n"
-                "4. Verify you have the necessary Notion workspace permissions"
-            )
+                # Feature #1: Prefetch workspace metadata for faster operations
+                await self._prefetch_metadata()
+
+                if self.verbose:
+                    print(f"[NOTION AGENT] Initialization complete. {len(self.available_tools)} tools available.")
+
+                return  # Success, exit retry loop
+
+            except RuntimeError as e:
+                # Check if this is a retryable error
+                error_msg = str(e).lower()
+                is_retryable = any(keyword in error_msg for keyword in [
+                    'timeout', 'connection', 'sse error', 'body timeout',
+                    'network', '503', '502', '504'
+                ])
+
+                if is_retryable and attempt < max_retries:
+                    retry_delay = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Connection failed: {e}")
+                        print(f"[NOTION AGENT] Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    # Not retryable or out of retries
+                    raise RuntimeError(
+                        f"Failed to initialize Notion agent after {attempt + 1} attempt(s): {e}\n"
+                        "Troubleshooting steps:\n"
+                        "1. Ensure npx is installed (npm install -g npx)\n"
+                        "2. Check your internet connection\n"
+                        "3. The Notion MCP server (https://mcp.notion.com/sse) may be experiencing issues\n"
+                        "4. You may need to authenticate via browser popup when prompted\n"
+                        "5. Verify you have the necessary Notion workspace permissions\n"
+                        "6. Try again later if the service is temporarily unavailable"
+                    )
+
+            except Exception as e:
+                # Other errors - attempt retry
+                if attempt < max_retries:
+                    retry_delay = 2 ** attempt
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Unexpected error: {e}")
+                        print(f"[NOTION AGENT] Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    raise RuntimeError(
+                        f"Failed to initialize Notion agent: {e}\n"
+                        "Troubleshooting steps:\n"
+                        "1. Ensure npx is installed (npm install -g npx)\n"
+                        "2. Check your internet connection\n"
+                        "3. You may need to authenticate via browser popup when prompted\n"
+                        "4. Verify you have the necessary Notion workspace permissions"
+                    )
 
     async def _prefetch_metadata(self):
         """
@@ -895,9 +974,10 @@ Remember: You're not just executing commands—you're helping users build a powe
         tool_name: str,
         tool_args: Dict
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Execute a tool with automatic retry on transient failures"""
+        """Execute a tool with automatic retry on transient failures and timeout protection"""
         retry_count = 0
         delay = RetryConfig.INITIAL_DELAY
+        operation_timeout = 60.0  # 60 seconds per tool operation
 
         while retry_count <= RetryConfig.MAX_RETRIES:
             try:
@@ -907,7 +987,17 @@ Remember: You're not just executing commands—you're helping users build a powe
                     if self.verbose:
                         print(f"[NOTION AGENT] Arguments: {json.dumps(tool_args, indent=2)[:500]}")
 
-                tool_result = await self.session.call_tool(tool_name, tool_args)
+                # Wrap tool call with timeout to prevent SSE hangs
+                try:
+                    tool_result = await asyncio.wait_for(
+                        self.session.call_tool(tool_name, tool_args),
+                        timeout=operation_timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"Tool '{tool_name}' timed out after {operation_timeout}s. "
+                        "The Notion MCP server may be slow or experiencing issues."
+                    )
 
                 result_content = []
                 for content in tool_result.content:
