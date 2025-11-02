@@ -34,6 +34,13 @@ from orchestration import ConfirmationQueue, ConfirmationBatch, Action, ActionEn
 from orchestration.action_parser import ActionParser
 from ui.confirmation_ui import ConfirmationUI
 
+# Import production utilities
+from config import Config
+from logger import get_logger
+from input_validator import InputValidator
+from error_handler import ErrorClassifier, format_error_for_user
+
+logger = get_logger(__name__)
 load_dotenv()
 
 # === ANSI COLOR CODES ===
@@ -57,6 +64,31 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 class OrchestratorAgent:
     """Main orchestration agent that coordinates specialized sub-agents"""
+
+    @staticmethod
+    def _safe_get_response_object(llm_response) -> Optional[Any]:
+        """Safely extract response object from LLM response with null checks"""
+        try:
+            if not llm_response:
+                return None
+            if not hasattr(llm_response, 'metadata') or not llm_response.metadata:
+                logger.warning("LLM response missing metadata")
+                return None
+            response_obj = llm_response.metadata.get('response_object')
+            if not response_obj:
+                logger.warning("Response object not in metadata")
+                return None
+            # Validate response structure
+            if not hasattr(response_obj, 'candidates') or not response_obj.candidates:
+                logger.warning("Response object missing candidates")
+                return None
+            return response_obj
+        except AttributeError as e:
+            logger.error(f"Error accessing response metadata: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error extracting response: {e}", exc_info=True)
+            return None
 
     def __init__(self, connectors_dir: str = "connectors", verbose: bool = False, llm: Optional[BaseLLM] = None):
         self.connectors_dir = Path(connectors_dir)
@@ -308,8 +340,8 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 try:
                     if hasattr(agent_instance, 'cleanup'):
                         await agent_instance.cleanup()
-                except:
-                    pass
+                except Exception as cleanup_err:
+                    logger.error(f"Failed to cleanup {agent_name}: {cleanup_err}", exc_info=True)
                 return (agent_name, None, None, messages)
 
         except Exception as e:
@@ -644,8 +676,8 @@ Provide a clear instruction describing what you want to accomplish.""",
         await self._spinner(send_task, "Thinking")
         llm_response = send_task.result()
 
-        # Get the raw response object for compatibility
-        response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+        # Get the raw response object for compatibility (with safety checks)
+        response = self._safe_get_response_object(llm_response)
 
         # Handle function calling loop
         # Increased from 15 to 30 for batch operations
@@ -690,6 +722,17 @@ Provide a clear instruction describing what you want to accomplish.""",
             instruction = args.get("instruction", "")
             context = args.get("context", "") # This will be a dict/list if passed by LLM
 
+            # SECURITY: Validate instruction before processing
+            is_valid, validation_error = InputValidator.validate_instruction(instruction)
+            if not is_valid:
+                logger.error(f"Invalid instruction rejected: {validation_error}")
+                function_call_result = {
+                    'agent': agent_name,
+                    'status': 'error',
+                    'error': validation_error
+                }
+                continue
+
             # Feature #20: Check if operation needs confirmation
             risk_info = self._detect_risky_operation(agent_name, instruction)
 
@@ -704,10 +747,16 @@ Provide a clear instruction describing what you want to accomplish.""",
                     context=context
                 )
 
-                # Enrich action with context from agent
-                await action_enricher.enrich_action(action, agent)
+                # Enrich action with context from agent (with timeout)
+                try:
+                    await asyncio.wait_for(
+                        action_enricher.enrich_action(action, agent),
+                        timeout=Config.ENRICHMENT_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Enrichment timeout for {agent_name}, proceeding with basic details")
 
-                # Queue the action
+                # Queue the action (thread-safe)
                 await confirmation_queue.queue_action(action)
 
                 if self.verbose:
@@ -715,7 +764,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
                 # Check if we should present batch now
                 if confirmation_queue.should_batch_now():
-                    batch = confirmation_queue.prepare_batch()
+                    batch = await confirmation_queue.prepare_batch()
                     batch.mark_presented()
 
                     # Present to user
@@ -880,53 +929,73 @@ Provide a clear instruction describing what you want to accomplish.""",
                     self._mark_retry_success(operation_key, solution_used="retry with same parameters")
 
             except asyncio.TimeoutError:
-                error_msg = f"⚠️ {agent_name} agent timed out after 120 seconds. Operation may have completed but response was not received."
-                result = error_msg
-                print(f"{C.YELLOW}⚠ {agent_name} agent operation timed out{C.ENDC}")
+                error_msg = f"Agent timed out after 120 seconds. Operation may have completed but response was not received."
 
-                # Feature #8: Track this error
+                # Classify timeout as transient error
+                error_classification = ErrorClassifier.classify(error_msg, agent_name)
                 self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
 
-                # Add retry context to error if this is a retry
-                if retry_context:
-                    attempt_num = retry_context['attempt_number']
-                    result += f"\n\n📊 Retry Info: This was attempt #{attempt_num}."
+                # Get retry context
+                retry_ctx = self._get_retry_context(operation_key)
+                attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
 
-                    if attempt_num >= self.max_retry_attempts:
-                        result += f"\n⚠️ Reached maximum retry attempts ({self.max_retry_attempts}). Consider:\n"
-                        result += f"  • Breaking this into smaller steps\n"
-                        result += f"  • Trying a different approach\n"
-                        result += f"  • Checking if the service is available"
+                # Format error with intelligent messaging
+                result = format_error_for_user(
+                    error_classification,
+                    agent_name,
+                    instruction,
+                    attempt_num,
+                    self.max_retry_attempts
+                )
+
+                # Add max retries message if exceeded
+                if retry_ctx and attempt_num >= self.max_retry_attempts:
+                    result += f"\n\n**Note**: This error appears to be transient (temporary network issue). If it persists:\n"
+                    result += f"  • Check your internet connection\n"
+                    result += f"  • Try again in a few moments\n"
+                    result += f"  • Break the operation into smaller steps"
+
+                print(f"{C.YELLOW}⚠ {agent_name} agent operation timed out{C.ENDC}")
 
             except Exception as e:
-                error_msg = f"⚠️ {agent_name} agent error: {str(e)}"
-                result = error_msg
-                print(f"{C.RED}✗ {agent_name} agent failed: {e}{C.ENDC}")
+                error_str = str(e)
 
-                # Feature #8: Track this error
-                self._track_retry_attempt(operation_key, agent_name, instruction, error=str(e))
+                # Classify the error intelligently
+                error_classification = ErrorClassifier.classify(error_str, agent_name)
 
-                # Add retry context and suggestions to error
-                if retry_context:
-                    attempt_num = retry_context['attempt_number']
-                    result += f"\n\n📊 Retry Info: This was attempt #{attempt_num}."
+                # Track the error
+                self._track_retry_attempt(operation_key, agent_name, instruction, error=error_str)
 
-                    # Add known solutions if available
-                    if known_solutions:
-                        result += f"\n\n💡 Known solutions for similar errors:\n"
-                        for i, solution in enumerate(known_solutions[:3], 1):
-                            result += f"  {i}. {solution}\n"
+                # Get retry context
+                retry_ctx = self._get_retry_context(operation_key)
+                attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
 
-                    # Suggest giving up if too many retries
+                # Format error message with intelligent suggestions
+                result = format_error_for_user(
+                    error_classification,
+                    agent_name,
+                    instruction,
+                    attempt_num,
+                    self.max_retry_attempts
+                )
+
+                # Add context-specific guidance
+                if not error_classification.is_retryable and attempt_num == 1:
+                    # Non-retryable error on first attempt - explain clearly
+                    result += f"\n\n⚠️ **This operation will not be retried** because it's a {error_classification.category.value} error."
+
+                if error_classification.is_retryable and retry_ctx:
+                    # Show retry info for retryable errors
                     if attempt_num >= self.max_retry_attempts:
-                        result += f"\n⚠️ Reached maximum retry attempts ({self.max_retry_attempts}). Suggesting:\n"
-                        result += f"  • Try a different approach or tool\n"
-                        result += f"  • Simplify the request\n"
-                        result += f"  • Ask user for clarification"
-                else:
-                    # First attempt - add basic guidance
-                    if "not found" in str(e).lower() or "invalid" in str(e).lower():
-                        result += f"\n\n💡 Tip: Try using discovery/validation before this operation"
+                        result += f"\n\n**Note**: Maximum retry attempts ({self.max_retry_attempts}) reached. This appears to be a persistent issue."
+                    else:
+                        result += f"\n\n**Next step**: The system will automatically retry this operation."
+
+                # Log the classification for debugging
+                if self.verbose:
+                    print(f"{C.CYAN}[ERROR CLASSIFICATION] Category: {error_classification.category.value}, Retryable: {error_classification.is_retryable}{C.ENDC}")
+
+                print(f"{C.RED}✗ {agent_name} agent failed: {e}{C.ENDC}")
             
             # Send result back to orchestrator with a spinner
             function_result = {
@@ -951,7 +1020,7 @@ Provide a clear instruction describing what you want to accomplish.""",
                 print(f"\n{C.CYAN}[QUEUE] Processing remaining {confirmation_queue.get_pending_count()} queued action(s){C.ENDC}\n")
 
             while confirmation_queue.get_pending_count() > 0:
-                batch = confirmation_queue.prepare_batch()
+                batch = await confirmation_queue.prepare_batch()
                 batch.mark_presented()
 
                 confirmation_ui.present_batch(batch.actions)
@@ -1043,7 +1112,43 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         # If we still don't have text, return a generic message
         return "⚠️ Task completed but response formatting failed. The operations were executed successfully."
-    
+
+    def _should_retry_operation(self, error_str: str, operation_key: str) -> bool:
+        """
+        Determine if we should retry an operation based on error classification.
+
+        Args:
+            error_str: The error message
+            operation_key: The operation key for tracking
+
+        Returns:
+            bool: True if we should retry, False if we should give up
+        """
+        # Classify the error
+        error_classification = ErrorClassifier.classify(error_str)
+
+        # Non-retryable errors - never retry
+        if not error_classification.is_retryable:
+            if self.verbose:
+                print(f"{C.CYAN}[RETRY DECISION] Non-retryable error ({error_classification.category.value}) - will NOT retry{C.ENDC}")
+            return False
+
+        # Check retry attempt count
+        retry_context = self._get_retry_context(operation_key)
+        if retry_context:
+            attempt_num = retry_context['attempt_number']
+            if attempt_num >= self.max_retry_attempts:
+                if self.verbose:
+                    print(f"{C.CYAN}[RETRY DECISION] Max attempts ({self.max_retry_attempts}) reached - will NOT retry{C.ENDC}")
+                return False
+
+        # Retryable error and within limits - retry
+        if self.verbose:
+            category = error_classification.category.value
+            print(f"{C.CYAN}[RETRY DECISION] Retryable error ({category}) - will retry{C.ENDC}")
+
+        return True
+
     def _deep_convert_proto_args(self, value: Any) -> Any:
         """Recursively converts Protobuf composite types into standard Python dicts/lists"""
         type_str = str(type(value))

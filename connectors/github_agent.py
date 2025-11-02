@@ -1431,27 +1431,23 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
     # ========================================================================
 
     async def get_capabilities(self) -> List[str]:
-        """Return GitHub capabilities in user-friendly format"""
+        """Return GitHub capabilities in user-friendly format with limitations"""
         if not self.available_tools:
             return ["GitHub operations (initializing...)"]
 
-        capabilities = []
-        for tool in self.available_tools:
-            description = tool.description or tool.name
-            if description:
-                capabilities.append(description)
-
-        if len(capabilities) > 10:
-            return [
-                "✓ Manage issues and pull requests",
-                "✓ Perform code reviews and analyze PRs",
-                "✓ Search code and commits",
-                "✓ Read repository files and structure",
-                "✓ Work with branches and commits",
-                f"✓ ...and {len(capabilities) - 5} more GitHub operations"
-            ]
-
-        return capabilities
+        # Return curated list with clear capabilities and limitations
+        return [
+            "✓ Manage issues and pull requests",
+            "✓ Perform code reviews and analyze PRs",
+            "✓ Search code and commits",
+            "✓ Read repository files and structure",
+            "✓ Work with branches and commits",
+            "✓ Get commit metadata (SHA, author, message, date)",
+            "✗ Cannot fetch: Raw diff/patch content (use GitHub UI or API directly)",
+            "✗ Cannot: Modify repository settings or access controls",
+            "✗ Cannot: Create or delete repositories",
+            "✗ Cannot: Manage webhooks or integrations",
+        ]
 
     async def validate_operation(self, instruction: str) -> Dict[str, Any]:
         """

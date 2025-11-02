@@ -1292,26 +1292,22 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
     # ========================================================================
 
     async def get_capabilities(self) -> List[str]:
-        """Return Slack capabilities in user-friendly format"""
+        """Return Slack capabilities in user-friendly format with limitations"""
         if not self.available_tools:
             return ["Slack operations (initializing...)"]
 
-        capabilities = []
-        for tool in self.available_tools:
-            description = tool.description or tool.name
-            if description:
-                capabilities.append(description)
-
-        if len(capabilities) > 10:
-            return [
-                "✓ Send messages to channels and users",
-                "✓ Search messages and conversations",
-                "✓ Read channel history and content",
-                "✓ Manage reactions and engagement",
-                f"✓ ...and {len(capabilities) - 4} more Slack operations"
-            ]
-
-        return capabilities
+        # Return curated list with clear capabilities and limitations
+        return [
+            "✓ Send messages to channels and direct messages",
+            "✓ Search messages and conversations",
+            "✓ Read channel history and content",
+            "✓ Manage reactions and thread replies",
+            "✓ List channels and get user information",
+            "✗ Cannot: Delete messages (only admins)",
+            "✗ Cannot: Manage channel settings (members, permissions, etc.)",
+            "✗ Cannot: Create or delete channels (limited to admin workspace)",
+            "✗ Cannot: Access private channels without membership",
+        ]
 
     async def validate_operation(self, instruction: str) -> Dict[str, Any]:
         """

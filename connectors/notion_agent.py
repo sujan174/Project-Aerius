@@ -1162,26 +1162,22 @@ Remember: You're not just executing commands—you're helping users build a powe
     # ========================================================================
 
     async def get_capabilities(self) -> List[str]:
-        """Return Notion capabilities in user-friendly format"""
+        """Return Notion capabilities in user-friendly format with limitations"""
         if not self.available_tools:
             return ["Notion operations (initializing...)"]
 
-        capabilities = []
-        for tool in self.available_tools:
-            description = tool.description or tool.name
-            if description:
-                capabilities.append(description)
-
-        if len(capabilities) > 10:
-            return [
-                "✓ Create and manage Notion pages",
-                "✓ Work with databases and entries",
-                "✓ Add and format content blocks",
-                "✓ Search across workspace",
-                f"✓ ...and {len(capabilities) - 4} more Notion operations"
-            ]
-
-        return capabilities
+        # Return curated list with clear capabilities and limitations
+        return [
+            "✓ Create and manage Notion pages",
+            "✓ Work with databases and database entries",
+            "✓ Add and format content blocks (text, headings, lists, code, etc.)",
+            "✓ Search across workspace and filter database entries",
+            "✓ Update page and database properties",
+            "✗ Cannot: Delete pages (archive only)",
+            "✗ Cannot: Modify database schemas or properties",
+            "✗ Cannot: Manage workspace or user permissions",
+            "✗ Cannot: Access pages without explicit sharing",
+        ]
 
     async def validate_operation(self, instruction: str) -> Dict[str, Any]:
         """

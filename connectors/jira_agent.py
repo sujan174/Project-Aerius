@@ -1216,32 +1216,27 @@ Remember: You're not just executing commands—you're helping users manage their
 
     async def get_capabilities(self) -> List[str]:
         """
-        Return Jira capabilities in user-friendly format
+        Return Jira capabilities in user-friendly format with limitations
 
         Returns:
-            List of capability descriptions
+            List of capability descriptions with clear limitations
         """
         if not self.available_tools:
             return ["Jira operations (initializing...)"]
 
-        # Group capabilities by category for better readability
-        capabilities = []
-        for tool in self.available_tools:
-            description = tool.description or tool.name
-            if description:
-                capabilities.append(description)
-
-        # If we have many tools, provide a summary instead of listing all
-        if len(capabilities) > 10:
-            return [
-                "✓ Create and manage Jira issues",
-                "✓ Search issues using JQL",
-                "✓ Add comments and collaborate",
-                "✓ Manage workflows and transitions",
-                f"✓ ...and {len(capabilities) - 4} more Jira operations"
-            ]
-
-        return capabilities
+        # Return curated list with clear capabilities and limitations
+        return [
+            "✓ Create and manage Jira issues",
+            "✓ Search issues using JQL (Jira Query Language)",
+            "✓ Update issue fields (status, assignee, labels, custom fields)",
+            "✓ Add comments and collaborate on issues",
+            "✓ Manage workflows and transitions",
+            "✓ Create sub-tasks and link issues",
+            "✗ Cannot: Delete issues (archived only)",
+            "✗ Cannot: Manage project settings or permissions",
+            "✗ Cannot: Create or delete projects (admin only)",
+            "✗ Cannot: Modify issue history or audit logs",
+        ]
 
     async def validate_operation(self, instruction: str) -> Dict[str, Any]:
         """

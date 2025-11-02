@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from datetime import datetime
 import uuid
+import asyncio
 from .action_model import Action, ActionStatus
+from config import Config
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -56,22 +61,33 @@ class ConfirmationQueue:
 
     def __init__(
         self,
-        batch_timeout_ms: int = 1000,  # Wait 1 second for more actions
-        max_batch_size: int = 10,       # Max actions per batch
+        batch_timeout_ms: Optional[int] = None,
+        max_batch_size: Optional[int] = None,
         verbose: bool = False
     ):
         self.pending_actions: List[Action] = []
         self.current_batch: Optional[ConfirmationBatch] = None
-        self.batch_timeout_ms = batch_timeout_ms
-        self.max_batch_size = max_batch_size
+        self.batch_timeout_ms = batch_timeout_ms or Config.BATCH_TIMEOUT_MS
+        self.max_batch_size = max_batch_size or Config.MAX_BATCH_SIZE
         self.completed_batches: List[ConfirmationBatch] = []
         self.verbose = verbose
 
+        # Thread-safety lock for concurrent queue operations
+        self._lock = asyncio.Lock()
+        self._max_pending = Config.MAX_PENDING_ACTIONS
+
     async def queue_action(self, action: Action) -> None:
-        """Add an action to the queue"""
-        self.pending_actions.append(action)
-        if self.verbose:
-            print(f"[QUEUE] Action queued: {action.agent_name}.{action.action_type.value}")
+        """Add an action to the queue (thread-safe)"""
+        async with self._lock:
+            # Check if queue is full
+            if len(self.pending_actions) >= self._max_pending:
+                error_msg = f"Queue full: {len(self.pending_actions)}/{self._max_pending} actions pending"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            self.pending_actions.append(action)
+            if self.verbose:
+                logger.info(f"Action queued: {action.agent_name}.{action.action_type.value}")
 
     def should_batch_now(self) -> bool:
         """
@@ -99,23 +115,27 @@ class ConfirmationQueue:
 
         return False
 
-    def prepare_batch(self) -> ConfirmationBatch:
+    async def prepare_batch(self) -> ConfirmationBatch:
         """
-        Create batch from pending actions.
+        Create batch from pending actions (thread-safe).
         Takes up to max_batch_size actions from queue.
         """
-        # Take up to max_batch_size actions
-        batch_actions = self.pending_actions[:self.max_batch_size]
-        self.pending_actions = self.pending_actions[self.max_batch_size:]
+        async with self._lock:
+            if not self.pending_actions:
+                return ConfirmationBatch()
 
-        batch = ConfirmationBatch()
-        for action in batch_actions:
-            batch.add_action(action)
+            # Take up to max_batch_size actions
+            batch_actions = self.pending_actions[:self.max_batch_size]
+            self.pending_actions = self.pending_actions[self.max_batch_size:]
 
-        self.current_batch = batch
-        if self.verbose:
-            print(f"[QUEUE] Batch prepared with {len(batch.actions)} action(s)")
-        return batch
+            batch = ConfirmationBatch()
+            for action in batch_actions:
+                batch.add_action(action)
+
+            self.current_batch = batch
+            if self.verbose:
+                logger.info(f"Batch prepared with {len(batch.actions)} action(s)")
+            return batch
 
     def get_pending_count(self) -> int:
         """How many actions waiting to be batched?"""

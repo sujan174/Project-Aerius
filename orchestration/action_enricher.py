@@ -12,7 +12,13 @@ Examples:
 
 from typing import Any, Dict, List, Optional
 import re
+import asyncio
 from orchestration.action_model import Action, ActionType
+from config import Config
+from logger import get_logger
+from input_validator import InputValidator
+
+logger = get_logger(__name__)
 
 
 class ActionEnricher:
@@ -26,14 +32,39 @@ class ActionEnricher:
 
     async def enrich_action(self, action: Action, agent: Optional[Any] = None) -> None:
         """
-        Enhance an action with contextual details.
+        Enhance an action with contextual details (with timeout and validation).
         Calls agent to fetch data if needed.
 
         Args:
             action: Action to enrich (modified in-place)
             agent: Agent instance (optional, for fetching context)
         """
+        try:
+            # Validate instruction before enrichment
+            is_valid, error = InputValidator.validate_instruction(action.instruction)
+            if not is_valid:
+                logger.warning(f"Invalid instruction: {error}")
+                action.details = {'error': f'Invalid instruction: {error}'}
+                return
 
+            # Run enrichment with timeout
+            try:
+                await asyncio.wait_for(
+                    self._enrich_action_impl(action, agent),
+                    timeout=Config.ENRICHMENT_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Enrichment timeout for {action.agent_name}")
+                action.details = {'error': f'Enrichment timed out (>{Config.ENRICHMENT_TIMEOUT}s)'}
+                if Config.REQUIRE_ENRICHMENT_FOR_HIGH_RISK and action.risk_level.value == 'high':
+                    logger.error(f"Blocking HIGH-RISK action due to failed enrichment: {action.id}")
+
+        except Exception as e:
+            logger.error(f"Unexpected error during enrichment: {str(e)}", exc_info=True)
+            action.details = {'error': f'Enrichment error: {str(e)}'}
+
+    async def _enrich_action_impl(self, action: Action, agent: Optional[Any] = None) -> None:
+        """Internal enrichment implementation"""
         # Route to agent-specific enrichment
         if action.agent_name == 'jira':
             await self._enrich_jira_action(action, agent)
@@ -86,9 +117,10 @@ class ActionEnricher:
         """Enrich Slack actions with channel/recipient info"""
 
         if action.action_type == ActionType.SEND:
-            # Extract channel/recipient from instruction
-            channel_match = re.search(r'(?:to|in|channel)[:\s]+([#@\w\-]+)', action.instruction, re.IGNORECASE)
-            channel = channel_match.group(1) if channel_match else 'Unknown'
+            # Extract channel/recipient from instruction (safe from regex injection)
+            channel = InputValidator.extract_slack_channel_safe(action.instruction)
+            if not channel:
+                channel = 'Unknown'
 
             # Extract message
             message_match = re.search(r'(?:message|text)[:\s]*["\']?([^"\']+)', action.instruction, re.IGNORECASE)
@@ -126,10 +158,8 @@ class ActionEnricher:
         }
 
     def _extract_jira_keys(self, text: str) -> List[str]:
-        """Extract Jira issue keys (e.g., KAN-123) from text"""
-        pattern = r'\b([A-Z]+-\d+)\b'
-        matches = re.findall(pattern, text)
-        return matches
+        """Extract Jira issue keys (e.g., KAN-123) from text (safe from regex injection)"""
+        return InputValidator.extract_jira_keys_safe(text)
 
     def get_action_summary(self, action: Action) -> str:
         """Get a human-readable summary of what will happen"""
