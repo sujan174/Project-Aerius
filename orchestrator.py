@@ -29,6 +29,11 @@ from intelligence import (
 # Import terminal UI
 from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
 
+# Import confirmation system (NEW)
+from orchestration import ConfirmationQueue, ConfirmationBatch, Action, ActionEnricher
+from orchestration.action_parser import ActionParser
+from ui.confirmation_ui import ConfirmationUI
+
 load_dotenv()
 
 # === ANSI COLOR CODES ===
@@ -569,7 +574,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
     async def process_message(self, user_message: str) -> str:
         """Process a user message with orchestration"""
-        
+
         # Initialize on first message
         if not self.chat:
             # Run the discovery task with a spinner
@@ -600,6 +605,16 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Reset confirmed operations for this request
         # (confirmations should only apply within a single user message)
         self.confirmed_operations.clear()
+
+        # Initialize confirmation system for this request (NEW)
+        confirmation_queue = ConfirmationQueue(
+            batch_timeout_ms=1000,  # 1 second timeout
+            max_batch_size=10,      # Max 10 actions per batch
+            verbose=self.verbose
+        )
+        action_parser = ActionParser(verbose=self.verbose)
+        action_enricher = ActionEnricher(verbose=self.verbose)
+        confirmation_ui = ConfirmationUI(verbose=self.verbose)
 
         # Process with intelligence
         intelligence = self._process_with_intelligence(user_message)
@@ -678,7 +693,98 @@ Provide a clear instruction describing what you want to accomplish.""",
             # Feature #20: Check if operation needs confirmation
             risk_info = self._detect_risky_operation(agent_name, instruction)
 
+            # NEW: Use confirmation queue for risky operations
             if risk_info.get('needs_confirmation'):
+                # Parse instruction into structured Action
+                agent = self.sub_agents.get(agent_name)
+                action = await action_parser.parse_instruction(
+                    agent_name=agent_name,
+                    instruction=instruction,
+                    agent=agent,
+                    context=context
+                )
+
+                # Enrich action with context from agent
+                await action_enricher.enrich_action(action, agent)
+
+                # Queue the action
+                await confirmation_queue.queue_action(action)
+
+                if self.verbose:
+                    print(f"{C.CYAN}[QUEUE] Action queued for confirmation{C.ENDC}")
+
+                # Check if we should present batch now
+                if confirmation_queue.should_batch_now():
+                    batch = confirmation_queue.prepare_batch()
+                    batch.mark_presented()
+
+                    # Present to user
+                    confirmation_ui.present_batch(batch.actions)
+
+                    # Collect decisions
+                    decisions = confirmation_ui.collect_decisions(batch.actions)
+                    batch.mark_decisions_received()
+
+                    # Process all actions in this batch
+                    for action_in_batch in batch.actions:
+                        if action_in_batch.id in decisions['confirmed']:
+                            # Apply user edits if any
+                            final_instruction = action_in_batch.instruction
+                            if action_in_batch.id in decisions['edited']:
+                                edits = decisions['edited'][action_in_batch.id]
+                                final_instruction = await agent.apply_parameter_edits(
+                                    action_in_batch.instruction, edits
+                                )
+                                if self.verbose:
+                                    print(f"{C.GREEN}[CONFIRM] Applied edits to instruction{C.ENDC}")
+
+                            # Mark as confirmed and execute
+                            action_in_batch.mark_confirmed()
+                            action_in_batch.mark_executing()
+
+                            # Execute
+                            result = await self.call_sub_agent(
+                                action_in_batch.agent_name,
+                                final_instruction,
+                                action_in_batch.context
+                            )
+
+                            if result.startswith("Error") or result.startswith("⚠️"):
+                                action_in_batch.mark_failed(result)
+                            else:
+                                action_in_batch.mark_succeeded(result)
+
+                            # Send result back to LLM
+                            func_result = {'name': f"use_{action_in_batch.agent_name}_agent", 'result': result}
+                            response_task = asyncio.create_task(
+                                self.chat.send_message_with_functions("", func_result)
+                            )
+                            await self._spinner(response_task, "Processing result")
+                            llm_response = response_task.result()
+                            response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+
+                        elif action_in_batch.id in decisions['rejected']:
+                            # User rejected
+                            reason = decisions['rejected'][action_in_batch.id]
+                            action_in_batch.mark_rejected(reason)
+                            result = f"⚠️ Operation cancelled by user: {reason}"
+
+                            func_result = {'name': f"use_{action_in_batch.agent_name}_agent", 'result': result}
+                            response_task = asyncio.create_task(
+                                self.chat.send_message_with_functions("", func_result)
+                            )
+                            await self._spinner(response_task, "Processing result")
+                            llm_response = response_task.result()
+                            response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+
+                    confirmation_queue.archive_batch()
+
+                # Don't execute yet - skip to next iteration to collect more or wait for batch
+                iteration += 1
+                continue
+
+            # OLD: Original confirmation code (keeping for backwards compatibility)
+            if risk_info.get('needs_confirmation') and False:  # Disabled - using new system
                 # Create operation signature for tracking
                 operation_sig = self._create_operation_signature(agent_name, instruction, risk_info['risk_type'])
 
@@ -839,6 +945,68 @@ Provide a clear instruction describing what you want to accomplish.""",
             
             iteration += 1
         
+        # NEW: Handle any remaining queued actions
+        if confirmation_queue.get_pending_count() > 0:
+            if self.verbose:
+                print(f"\n{C.CYAN}[QUEUE] Processing remaining {confirmation_queue.get_pending_count()} queued action(s){C.ENDC}\n")
+
+            while confirmation_queue.get_pending_count() > 0:
+                batch = confirmation_queue.prepare_batch()
+                batch.mark_presented()
+
+                confirmation_ui.present_batch(batch.actions)
+                decisions = confirmation_ui.collect_decisions(batch.actions)
+                batch.mark_decisions_received()
+
+                # Process actions same as in the main loop
+                for action_in_batch in batch.actions:
+                    agent = self.sub_agents.get(action_in_batch.agent_name)
+                    if not agent:
+                        continue
+
+                    if action_in_batch.id in decisions['confirmed']:
+                        final_instruction = action_in_batch.instruction
+                        if action_in_batch.id in decisions['edited']:
+                            edits = decisions['edited'][action_in_batch.id]
+                            final_instruction = await agent.apply_parameter_edits(
+                                action_in_batch.instruction, edits
+                            )
+
+                        action_in_batch.mark_confirmed()
+                        action_in_batch.mark_executing()
+
+                        result = await self.call_sub_agent(
+                            action_in_batch.agent_name,
+                            final_instruction,
+                            action_in_batch.context
+                        )
+
+                        if result.startswith("Error") or result.startswith("⚠️"):
+                            action_in_batch.mark_failed(result)
+                        else:
+                            action_in_batch.mark_succeeded(result)
+
+                        func_result = {'name': f"use_{action_in_batch.agent_name}_agent", 'result': result}
+                        response_task = asyncio.create_task(
+                            self.chat.send_message_with_functions("", func_result)
+                        )
+                        await self._spinner(response_task, "Processing result")
+                        llm_response = response_task.result()
+
+                    elif action_in_batch.id in decisions['rejected']:
+                        reason = decisions['rejected'][action_in_batch.id]
+                        action_in_batch.mark_rejected(reason)
+                        result = f"⚠️ Operation cancelled by user: {reason}"
+
+                        func_result = {'name': f"use_{action_in_batch.agent_name}_agent", 'result': result}
+                        response_task = asyncio.create_task(
+                            self.chat.send_message_with_functions("", func_result)
+                        )
+                        await self._spinner(response_task, "Processing result")
+                        llm_response = response_task.result()
+
+                confirmation_queue.archive_batch()
+
         if iteration >= max_iterations:
             print(f"{C.YELLOW}⚠ Warning: Reached maximum orchestration iterations{C.ENDC}")
             print(f"{C.YELLOW}💡 Tip: Break complex tasks into smaller steps{C.ENDC}")

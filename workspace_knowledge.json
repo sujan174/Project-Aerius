@@ -7,9 +7,9 @@
     "github": {
       "data": {
         "repositories": {},
-        "fetched_at": 1366132.197124208
+        "fetched_at": 1405433.293925458
       },
-      "cached_at": "2025-11-02T00:17:07.793202",
+      "cached_at": "2025-11-02T11:12:08.675217",
       "ttl_seconds": 3600
     },
     "slack": {
@@ -45,25 +45,25 @@
           }
         },
         "users": {},
-        "fetched_at": 1366133.504853125
+        "fetched_at": 1405434.172156541
       },
-      "cached_at": "2025-11-02T00:17:09.100969",
+      "cached_at": "2025-11-02T11:12:09.553443",
       "ttl_seconds": 3600
     },
     "jira": {
       "data": {
         "projects": {},
-        "fetched_at": 1366133.4817855
+        "fetched_at": 1405434.551480125
       },
-      "cached_at": "2025-11-02T00:17:09.077853",
+      "cached_at": "2025-11-02T11:12:09.932761",
       "ttl_seconds": 3600
     },
     "notion": {
       "data": {
         "databases": {},
-        "fetched_at": 1366134.181393333
+        "fetched_at": 1405437.298122208
       },
-      "cached_at": "2025-11-02T00:17:09.777458",
+      "cached_at": "2025-11-02T11:12:12.679398",
       "ttl_seconds": 3600
     },
     "browser": {
@@ -87,9 +87,9 @@
           "firefox": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
           "safari": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
         },
-        "fetched_at": 1363084.551380791
+        "fetched_at": 1379458.282088166
       },
-      "cached_at": "2025-11-01T23:26:20.157645",
+      "cached_at": "2025-11-02T03:59:13.876408",
       "ttl_seconds": 3600
     },
     "scraper": {
@@ -128,9 +128,9 @@
           "max_depth": 3,
           "max_pages": 100
         },
-        "fetched_at": 1363746.729576625
+        "fetched_at": 1379665.196628875
       },
-      "cached_at": "2025-11-01T23:37:22.331970",
+      "cached_at": "2025-11-02T04:02:40.790462",
       "ttl_seconds": 3600
     },
     "code_reviewer": {

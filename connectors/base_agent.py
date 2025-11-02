@@ -227,6 +227,108 @@ class BaseAgent(ABC):
         """
         pass
 
+    async def get_action_schema(self) -> Dict[str, Any]:
+        """
+        OPTIONAL: Return schema describing possible actions this agent can perform.
+
+        Used by ActionParser to understand editable fields and constraints.
+        Implementing this allows ActionParser to provide better field metadata
+        and enable user editing of action parameters.
+
+        Default implementation returns empty dict (agent doesn't support schema).
+
+        Expected format:
+        {
+            'create': {
+                'action_type': 'create',
+                'risk_level': 'medium',
+                'parameters': {
+                    'title': {
+                        'type': 'string',
+                        'display_label': 'Issue Title',
+                        'editable': True,
+                        'required': True,
+                        'constraints': {
+                            'min_length': 5,
+                            'max_length': 255
+                        }
+                    },
+                    'project': {
+                        'type': 'string',
+                        'editable': False,  # Can't change which project
+                        'required': True
+                    }
+                }
+            }
+        }
+
+        Returns:
+            Dict[str, Any]: Schema describing agent's actions and parameters
+        """
+        return {}
+
+    async def apply_parameter_edits(
+        self,
+        instruction: str,
+        parameter_edits: Dict[str, Any]
+    ) -> str:
+        """
+        OPTIONAL: Apply user's edited parameters back into the instruction.
+
+        The orchestrator will call this when a user has edited parameters
+        before confirming. You need to merge the edits back into the instruction
+        in a format your agent's execute() method can understand.
+
+        Args:
+            instruction: Original instruction from LLM
+            parameter_edits: {field_name: new_value} from user
+
+        Returns:
+            str: Modified instruction with edits applied
+
+        Example for Jira:
+            Original: "Create issue with title 'Bug' description 'System crash'"
+            Edits: {'title': 'Critical: System crash'}
+            Return: "Create issue with title 'Critical: System crash' description 'System crash'"
+        """
+        # Default: Simple string replacement
+        updated = instruction
+        for param_name, new_value in parameter_edits.items():
+            # Try to find and replace parameter values in instruction
+            # This is simplistic - agents should override for complex logic
+            import re
+            pattern = rf"{param_name}[:\s]*['\"]([^'\"]+)['\"]"
+            updated = re.sub(pattern, f"{param_name}: '{new_value}'", updated)
+
+        return updated
+
+    async def can_edit_parameter(
+        self,
+        action_type: str,
+        parameter_name: str
+    ) -> bool:
+        """
+        OPTIONAL: Return whether a parameter can be edited by user.
+
+        Override if your agent has constraints on which parameters
+        users can modify. Default is to allow editing of all non-sensitive parameters.
+
+        Args:
+            action_type: Type of action ('create', 'update', etc.)
+            parameter_name: Name of the parameter
+
+        Returns:
+            bool: True if parameter can be edited, False if read-only
+        """
+        # Don't allow editing of sensitive data
+        sensitive = {'api_key', 'token', 'password', 'secret', 'auth'}
+
+        for sensitive_word in sensitive:
+            if sensitive_word in parameter_name.lower():
+                return False
+
+        return True
+
     async def validate_operation(self, instruction: str) -> Dict[str, Any]:
         """
         Validate if an operation can be performed before execution (Feature #14)
