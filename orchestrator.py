@@ -393,9 +393,18 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             if result is None:
                 continue
 
-            if isinstance(result, Exception):
+            # Check if result is an exception (including BaseException subclasses like CancelledError)
+            if isinstance(result, BaseException):
                 failed += 1
                 print(f"{C.RED}✗ Exception during loading: {result}{C.ENDC}")
+                if self.verbose:
+                    print(f"{C.RED}    Type: {type(result).__name__}{C.ENDC}")
+                continue
+
+            # Validate result is a tuple before unpacking
+            if not isinstance(result, tuple) or len(result) != 4:
+                failed += 1
+                print(f"{C.RED}✗ Invalid result from agent loading: {result}{C.ENDC}")
                 continue
 
             agent_name, agent_instance, capabilities, messages = result

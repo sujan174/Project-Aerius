@@ -158,7 +158,9 @@ class Agent(BaseAgent):
 
         # MCP Connection Components
         self.session: ClientSession = None
+        self.session_entered = False  # Track if session.__aenter__() succeeded
         self.stdio_context = None
+        self.stdio_context_entered = False  # Track if stdio_context.__aenter__() succeeded
         self.model = None
         self.available_tools = []
 
@@ -782,12 +784,20 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
 
     async def _connect_to_mcp(self, server_params: StdioServerParameters):
         """Establish connection to MCP server"""
-        self.stdio_context = stdio_client(server_params)
-        stdio, write = await self.stdio_context.__aenter__()
-        self.session = ClientSession(stdio, write)
+        try:
+            self.stdio_context = stdio_client(server_params)
+            stdio, write = await self.stdio_context.__aenter__()
+            self.stdio_context_entered = True  # Mark as successfully entered
 
-        await self.session.__aenter__()
-        await self.session.initialize()
+            self.session = ClientSession(stdio, write)
+            await self.session.__aenter__()
+            self.session_entered = True  # Mark as successfully entered
+
+            await self.session.initialize()
+        except Exception as e:
+            # If connection fails, ensure we clean up partial state
+            await self._cleanup_connection()
+            raise
 
     async def _load_tools(self):
         """Load available tools from MCP server"""
@@ -1657,24 +1667,38 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
     # CLEANUP AND RESOURCE MANAGEMENT
     # ========================================================================
 
+    async def _cleanup_connection(self):
+        """Internal cleanup helper for MCP connection resources"""
+        # Close session if it was successfully entered
+        if self.session and self.session_entered:
+            try:
+                await self.session.__aexit__(None, None, None)
+            except Exception as e:
+                # Suppress all cleanup errors to prevent cascading failures
+                if self.verbose:
+                    print(f"[SLACK AGENT] Suppressed session cleanup error: {e}")
+            finally:
+                self.session = None
+                self.session_entered = False
+
+        # Close stdio context if it was successfully entered
+        if self.stdio_context and self.stdio_context_entered:
+            try:
+                await self.stdio_context.__aexit__(None, None, None)
+            except Exception as e:
+                # Suppress all cleanup errors
+                if self.verbose:
+                    print(f"[SLACK AGENT] Suppressed stdio cleanup error: {e}")
+            finally:
+                self.stdio_context = None
+                self.stdio_context_entered = False
+
     async def cleanup(self):
         """Disconnect from Slack and clean up resources"""
-        try:
-            if self.verbose:
-                print(f"\n[SLACK AGENT] Cleaning up. {self.stats.get_summary()}")
+        if self.verbose:
+            print(f"\n[SLACK AGENT] Cleaning up. {self.stats.get_summary()}")
 
-            if self.session:
-                await self.session.__aexit__(None, None, None)
-        except Exception as e:
-            if self.verbose:
-                print(f"[SLACK AGENT] Error closing session: {e}")
-
-        try:
-            if self.stdio_context:
-                await self.stdio_context.__aexit__(None, None, None)
-        except Exception as e:
-            if self.verbose:
-                print(f"[SLACK AGENT] Error closing stdio context: {e}")
+        await self._cleanup_connection()
 
     # ========================================================================
     # SCHEMA CONVERSION HELPERS

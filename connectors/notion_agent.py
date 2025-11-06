@@ -172,7 +172,9 @@ class Agent(BaseAgent):
 
         # MCP Connection Components
         self.session: ClientSession = None
+        self.session_entered = False  # Track if session.__aenter__() succeeded
         self.stdio_context = None
+        self.stdio_context_entered = False  # Track if stdio_context.__aenter__() succeeded
         self.model = None
         self.available_tools = []
 
@@ -614,20 +616,41 @@ Remember: You're not just executing commands—you're helping users build a powe
                     retry_msg = f" (attempt {attempt + 1}/{max_retries + 1})" if attempt > 0 else ""
                     print(f"[NOTION AGENT] Initializing connection to Notion MCP server{retry_msg}")
 
-                # Notion's official MCP Remote Proxy
-                # Auth is handled via a browser popup (OAuth)
+                # Notion's official self-hosted MCP server
+                # Requires NOTION_TOKEN environment variable (from Notion integration)
+                # See: https://www.notion.so/profile/integrations to create integration
 
-                # Prepare environment variables to suppress debug output when not in verbose mode
+                # Check for NOTION_TOKEN
+                notion_token = os.getenv("NOTION_TOKEN")
+                if not notion_token:
+                    raise ValueError(
+                        "NOTION_TOKEN environment variable is required.\n"
+                        "To set up:\n"
+                        "1. Go to https://www.notion.so/profile/integrations\n"
+                        "2. Click 'New Integration' and create an internal integration\n"
+                        "3. Copy the 'Internal Integration Token'\n"
+                        "4. Add NOTION_TOKEN=your_token_here to your .env file\n"
+                        "5. Share your Notion pages/databases with this integration"
+                    )
+
+                # Prepare environment variables
                 env_vars = {**os.environ}
+                env_vars["NOTION_TOKEN"] = notion_token
+
                 if not self.verbose:
-                    # Suppress debug output from mcp-remote
+                    # Suppress debug output
                     env_vars["DEBUG"] = ""
                     env_vars["NODE_ENV"] = "production"
                     env_vars["MCP_DEBUG"] = "0"
 
+                # Use official self-hosted Notion MCP server
+                # Use full path to npx to avoid PATH issues
+                import shutil
+                npx_path = shutil.which("npx") or "/usr/local/bin/npx"
+
                 server_params = StdioServerParameters(
-                    command="npx",
-                    args=["-y", "mcp-remote", "https://mcp.notion.com/sse"],
+                    command=npx_path,
+                    args=["-y", "@notionhq/notion-mcp-server"],
                     env=env_vars
                 )
 
@@ -638,12 +661,15 @@ Remember: You're not just executing commands—you're helping users build a powe
                         self.stdio_context.__aenter__(),
                         timeout=connection_timeout
                     )
-                    self.session = ClientSession(stdio, write)
+                    self.stdio_context_entered = True  # Mark as successfully entered
 
+                    self.session = ClientSession(stdio, write)
                     await asyncio.wait_for(
                         self.session.__aenter__(),
                         timeout=10.0
                     )
+                    self.session_entered = True  # Mark as successfully entered
+
                     await asyncio.wait_for(
                         self.session.initialize(),
                         timeout=10.0
@@ -657,10 +683,16 @@ Remember: You're not just executing commands—you're helping users build a powe
                     self.available_tools = tools_list.tools
 
                 except asyncio.TimeoutError:
+                    # Clean up partial state before raising
+                    await self._cleanup_connection()
                     raise RuntimeError(
                         f"Connection timeout after {connection_timeout}s. "
                         "The Notion MCP server may be slow or unavailable."
                     )
+                except Exception as e:
+                    # If connection fails, ensure we clean up partial state
+                    await self._cleanup_connection()
+                    raise
 
                 # Convert to Gemini format
                 gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
@@ -1416,24 +1448,38 @@ Remember: You're not just executing commands—you're helping users build a powe
     # CLEANUP AND RESOURCE MANAGEMENT
     # ========================================================================
 
+    async def _cleanup_connection(self):
+        """Internal cleanup helper for MCP connection resources"""
+        # Close session if it was successfully entered
+        if self.session and self.session_entered:
+            try:
+                await self.session.__aexit__(None, None, None)
+            except Exception as e:
+                # Suppress all cleanup errors to prevent cascading failures
+                if self.verbose:
+                    print(f"[NOTION AGENT] Suppressed session cleanup error: {e}")
+            finally:
+                self.session = None
+                self.session_entered = False
+
+        # Close stdio context if it was successfully entered
+        if self.stdio_context and self.stdio_context_entered:
+            try:
+                await self.stdio_context.__aexit__(None, None, None)
+            except Exception as e:
+                # Suppress all cleanup errors
+                if self.verbose:
+                    print(f"[NOTION AGENT] Suppressed stdio cleanup error: {e}")
+            finally:
+                self.stdio_context = None
+                self.stdio_context_entered = False
+
     async def cleanup(self):
         """Disconnect from Notion and clean up resources"""
-        try:
-            if self.verbose:
-                print(f"\n[NOTION AGENT] Cleaning up. {self.stats.get_summary()}")
+        if self.verbose:
+            print(f"\n[NOTION AGENT] Cleaning up. {self.stats.get_summary()}")
 
-            if self.session:
-                await self.session.__aexit__(None, None, None)
-        except Exception as e:
-            if self.verbose:
-                print(f"[NOTION AGENT] Error closing session: {e}")
-
-        try:
-            if self.stdio_context:
-                await self.stdio_context.__aexit__(None, None, None)
-        except Exception as e:
-            if self.verbose:
-                print(f"[NOTION AGENT] Error closing stdio context: {e}")
+        await self._cleanup_connection()
 
     # ========================================================================
     # SCHEMA CONVERSION HELPERS

@@ -30,8 +30,11 @@ class InputValidator:
             return False, "Instruction contains null bytes"
 
         # Check for excessive special characters (potential injection)
+        # Use a more lenient threshold that scales with instruction length
+        # to allow legitimate code snippets, file paths, and quoted text
         special_count = sum(1 for c in instruction if c in ';\'"\\')
-        if special_count > 20:  # Heuristic threshold
+        max_allowed_special_chars = max(100, len(instruction) // 5)  # At least 100, or 20% of length
+        if special_count > max_allowed_special_chars:
             return False, "Instruction contains excessive special characters"
 
         return True, None
