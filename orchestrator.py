@@ -999,8 +999,10 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         # Log confidence scoring
         if hasattr(self, 'intel_logger'):
+            # Extract numeric score from Confidence object
+            confidence_value = confidence.score if hasattr(confidence, 'score') else 0.5
             self.intel_logger.log_confidence_score(
-                overall_confidence=confidence,
+                overall_confidence=confidence_value,
                 component_scores={
                     'intent': 0.85,
                     'entity': 0.80,
