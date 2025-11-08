@@ -37,7 +37,7 @@ from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
 from config import Config
 from core.logger import get_logger
 from core.input_validator import InputValidator
-from core.error_handler import ErrorClassifier, format_error_for_user, DuplicateOperationDetector
+from core.errors import ErrorClassifier, format_error_for_user, DuplicateOperationDetector, ErrorMessageEnhancer
 
 # Import observability system
 from core.observability import (
@@ -46,12 +46,8 @@ from core.observability import (
 )
 
 # Import new enhancement systems
-from core.retry_manager import RetryManager
-from core.undo_manager import UndoManager, UndoableOperationType
-from core.user_preferences import UserPreferenceManager
-from core.analytics import AnalyticsCollector
-from core.error_messaging import ErrorMessageEnhancer
-from core.message_confirmation import MandatoryConfirmationEnforcer
+from core.resilience import RetryManager, UndoManager, UndoableOperationType
+from core.user import UserPreferenceManager, AnalyticsCollector, MandatoryConfirmationEnforcer
 
 logger = get_logger(__name__)
 load_dotenv()
