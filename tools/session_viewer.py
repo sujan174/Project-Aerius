@@ -98,28 +98,41 @@ class SessionLoader:
         # Load orchestration data
         orch_files = list((self.logs_dir / "orchestration").glob(f"orchestration_{session_id}_*.json"))
         if orch_files:
-            with open(orch_files[0], 'r') as f:
-                data.orchestration = json.load(f)
+            try:
+                with open(orch_files[0], 'r') as f:
+                    data.orchestration = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"{Colors.YELLOW}⚠ Warning: Skipping malformed orchestration file: {e}{Colors.ENDC}")
 
         # Load intelligence data
         intel_files = list((self.logs_dir / "intelligence").glob(f"intelligence_{session_id}_*.json"))
         if intel_files:
-            with open(intel_files[0], 'r') as f:
-                data.intelligence = json.load(f)
+            try:
+                with open(intel_files[0], 'r') as f:
+                    data.intelligence = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"{Colors.YELLOW}⚠ Warning: Skipping malformed intelligence file: {e}{Colors.ENDC}")
 
         # Load metrics data
         metrics_files = list((self.logs_dir / "metrics").glob(f"metrics_{session_id}.json"))
         if metrics_files:
-            with open(metrics_files[0], 'r') as f:
-                data.metrics = json.load(f)
+            try:
+                with open(metrics_files[0], 'r') as f:
+                    data.metrics = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"{Colors.YELLOW}⚠ Warning: Skipping malformed metrics file: {e}{Colors.ENDC}")
 
-        # Load traces
+        # Load traces (skip malformed files)
         trace_dir = self.logs_dir / "traces"
         if trace_dir.exists():
             for trace_file in trace_dir.glob("trace_*.json"):
-                with open(trace_file, 'r') as f:
-                    trace = json.load(f)
-                    data.traces.append(trace)
+                try:
+                    with open(trace_file, 'r') as f:
+                        trace = json.load(f)
+                        data.traces.append(trace)
+                except json.JSONDecodeError as e:
+                    # Silently skip malformed trace files (common during crashes)
+                    pass
 
         return data
 
