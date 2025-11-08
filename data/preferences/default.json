@@ -6,21 +6,22 @@
     "prefers_verbose": false,
     "prefers_technical": true,
     "prefers_emojis": false,
-    "sample_count": 76,
+    "sample_count": 83,
     "confidence": 0.9
   },
   "working_hours": {
     "typical_start_hour": 10,
-    "typical_end_hour": 19,
+    "typical_end_hour": 18,
     "active_days": [
       0,
       1,
       2,
       3,
-      4
+      4,
+      5
     ],
     "timezone_offset": 0,
-    "sample_count": 76,
+    "sample_count": 83,
     "confidence": 0.9
   },
   "statistics": {
@@ -29,5 +30,5 @@
     "confirmations_rejected": 0,
     "auto_executions": 0
   },
-  "saved_at": 1762528497.967586
+  "saved_at": 1762607707.8534799
 }
