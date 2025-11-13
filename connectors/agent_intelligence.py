@@ -530,8 +530,8 @@ class ProactiveAssistant:
         # GitHub-specific validations
         if self.agent_name == 'github':
             if operation == 'merge_pr':
-                if not context.get('has_approvals'):
-                    return "⚠️ PR has no approvals. Merge anyway?"
+                if not context.get('has_reviews'):
+                    return "⚠️ PR has no reviews. Merge anyway?"
 
                 if context.get('has_failing_checks'):
                     return "⚠️ Some checks are failing. Merging is not recommended."

@@ -11,26 +11,42 @@ Components:
 - Task Decomposition: Break complex tasks into optimal execution plans
 - Confidence Scoring: Make decisions with awareness of certainty
 - Context Management: Deep conversation and workspace understanding
-- Agent Selection: Intelligently match tasks to optimal agents
-- Error Intelligence: Predict and prevent errors
-- Learning & Adaptation: Improve from experience
-- Optimization: Cost and efficiency intelligence
+- Intelligent Caching: Performance optimization through caching
+- Intelligence Coordinator: Central pipeline orchestration
+
+Architecture:
+- pipeline.py: Core intelligence processing (intent, entity, task, confidence)
+- system.py: System infrastructure (context, cache, coordinator)
+- base_types.py: Shared data structures and types
 
 Author: AI System
-Version: 2.0
+Version: 4.0 - Consolidated structure
 """
 
+# Base types
 from .base_types import (
     Intent, IntentType, Entity, EntityType,
     Task, ExecutionPlan, DependencyGraph,
     Confidence, ConfidenceLevel
 )
 
-from .intent_classifier import IntentClassifier
-from .entity_extractor import EntityExtractor
-from .task_decomposer import TaskDecomposer
-from .confidence_scorer import ConfidenceScorer
-from .context_manager import ConversationContextManager
+# Pipeline components (from pipeline.py)
+from .pipeline import (
+    IntentClassifier,
+    EntityExtractor,
+    TaskDecomposer,
+    ConfidenceScorer
+)
+
+# System components (from system.py)
+from .system import (
+    ConversationContextManager,
+    IntelligentCache,
+    CacheKeyBuilder,
+    IntelligenceCoordinator,
+    get_global_cache,
+    configure_global_cache
+)
 
 __all__ = [
     # Base types
@@ -38,12 +54,19 @@ __all__ = [
     'Task', 'ExecutionPlan', 'DependencyGraph',
     'Confidence', 'ConfidenceLevel',
 
-    # Components
+    # Pipeline components
     'IntentClassifier',
     'EntityExtractor',
     'TaskDecomposer',
     'ConfidenceScorer',
+
+    # System components
     'ConversationContextManager',
+    'IntelligentCache',
+    'CacheKeyBuilder',
+    'IntelligenceCoordinator',
+    'get_global_cache',
+    'configure_global_cache',
 ]
 
-__version__ = '2.0.0'
+__version__ = '4.0.0'

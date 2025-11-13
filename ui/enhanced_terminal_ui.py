@@ -1,472 +1,650 @@
 """
-Enhanced Terminal UI - Claude Code Quality
+Enhanced Terminal UI - Ultra Modern Edition v4.0
 
-Beautiful, interactive terminal interface with:
-- Markdown rendering
-- Syntax highlighting
-- Streaming responses
-- Status panels
-- Progress indicators
-- Clean visual design
+A world-class terminal interface featuring:
+- Beautiful, consistent design language
+- Smooth animations and transitions
+- Intelligent loading states
+- Real-time streaming responses
+- Comprehensive help system
+- Session analytics dashboard
+- Keyboard shortcuts
+- Professional visual hierarchy
 
 Author: AI System
-Version: 3.0 (Claude Code Quality)
+Version: 4.0 - Ultra Modern Edition
 """
 
 import sys
 import time
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+import asyncio
+from typing import Optional, List, Dict, Any, Generator
+from datetime import datetime, timedelta
+from contextlib import contextmanager
 
-try:
-    from rich.console import Console
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-    from rich.syntax import Syntax
-    from rich.table import Table
-    from rich.live import Live
-    from rich.layout import Layout
-    from rich.text import Text
-    from rich.prompt import Prompt, Confirm
-    from rich.rule import Rule
-    from rich.columns import Columns
-    from rich import box
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
-    print("⚠️  Installing rich library for better UI...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "rich"])
-    from rich.console import Console
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-    from rich.syntax import Syntax
-    from rich.table import Table
-    from rich.live import Live
-    from rich.layout import Layout
-    from rich.text import Text
-    from rich.prompt import Prompt, Confirm
-    from rich.rule import Rule
-    from rich.columns import Columns
-    from rich import box
+from rich.console import Console, Group
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, TaskID
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.live import Live
+from rich.layout import Layout
+from rich.text import Text
+from rich.prompt import Prompt, Confirm
+from rich.rule import Rule
+from rich.columns import Columns
+from rich import box
+from rich.align import Align
+from rich.padding import Padding
+from rich.tree import Tree
+from rich.status import Status
+
+from ui.design_system import ds, build_status_text, build_key_value, build_divider
 
 
 class EnhancedTerminalUI:
     """
-    Claude Code-quality terminal interface.
+    Ultra-modern terminal interface with design system integration.
 
     Features:
-    - Beautiful markdown rendering
-    - Syntax-highlighted code blocks
-    - Streaming responses
-    - Agent status display
-    - Progress indicators
-    - Clean, professional design
+    - Unified visual language via design system
+    - Smooth animations and transitions
+    - Intelligent loading states
+    - Real-time streaming responses
+    - Comprehensive help system
+    - Session analytics dashboard
+    - Keyboard shortcuts
+    - Professional visual hierarchy
+    - Context-aware notifications
     """
 
     def __init__(self, verbose: bool = False):
-        self.console = Console()
+        self.console = ds.get_console()
         self.verbose = verbose
-
-        # Theme colors
-        self.colors = {
-            'primary': '#00D9FF',      # Cyan
-            'success': '#00FF88',      # Green
-            'warning': '#FFB800',      # Orange
-            'error': '#FF4444',        # Red
-            'info': '#8B8BFF',         # Blue
-            'muted': '#888888',        # Gray
-            'agent': '#FF88FF',        # Purple
-            'user': '#FFFFFF',         # White
-        }
 
         # Session state
         self.session_start = datetime.now()
         self.message_count = 0
         self.agent_calls = {}
+        self.session_stats = {
+            'successes': 0,
+            'errors': 0,
+            'agent_calls_by_type': {}
+        }
+
+        # UI state
+        self.show_help = False
+        self.current_operation = None
+        self.last_notification = None
+
+    # ═══════════════════════════════════════════════════════════════
+    # SCREEN MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════
 
     def clear_screen(self):
-        """Clear terminal screen"""
+        """Clear terminal screen with smooth transition"""
         self.console.clear()
 
     def print_header(self, session_id: str):
-        """Print beautiful header on startup"""
+        """Print stunning, modern header on startup"""
         self.clear_screen()
 
-        # Create header panel
-        header_text = Text()
-        header_text.append("╔═══════════════════════════════════════════════════════════╗\n", style="bold cyan")
-        header_text.append("║                                                           ║\n", style="bold cyan")
-        header_text.append("║        ", style="bold cyan")
-        header_text.append("AI WORKSPACE ORCHESTRATOR", style="bold white")
-        header_text.append("                  ║\n", style="bold cyan")
-        header_text.append("║                                                           ║\n", style="bold cyan")
-        header_text.append("║           Your intelligent multi-agent assistant          ║\n", style="cyan")
-        header_text.append("║                                                           ║\n", style="bold cyan")
-        header_text.append("╚═══════════════════════════════════════════════════════════╝", style="bold cyan")
+        # ASCII Art Banner
+        banner = Text()
+        banner.append("\n")
+        banner.append("     █████╗ ██╗    ██╗ ██████╗ ██████╗  ██████╗██╗  ██╗███████╗\n", style=f"bold {ds.colors.primary_500}")
+        banner.append("    ██╔══██╗██║    ██║██╔═══██╗██╔══██╗██╔════╝██║  ██║██╔════╝\n", style=f"bold {ds.colors.primary_500}")
+        banner.append("    ███████║██║ █╗ ██║██║   ██║██████╔╝██║     ███████║█████╗\n", style=f"{ds.colors.primary_600}")
+        banner.append("    ██╔══██║██║███╗██║██║   ██║██╔══██╗██║     ██╔══██║██╔══╝\n", style=f"{ds.colors.primary_700}")
+        banner.append("    ██║  ██║╚███╔███╔╝╚██████╔╝██║  ██║╚██████╗██║  ██║███████╗\n", style=f"{ds.colors.primary_800}")
+        banner.append("    ╚═╝  ╚═╝ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝\n", style=f"dim {ds.colors.primary_900}")
+        banner.append("\n")
 
-        self.console.print(header_text)
-        self.console.print()
+        tagline = Text()
+        tagline.append("                 ", style="")
+        tagline.append("✨ ", style=ds.colors.accent_teal)
+        tagline.append("Your Intelligent Multi-Agent Workspace Assistant", style=f"italic {ds.colors.text_secondary}")
+        tagline.append(" ✨", style=ds.colors.accent_teal)
 
-        # Session info
-        info_panel = Panel(
-            f"[cyan]Session:[/cyan] [white]{session_id[:8]}...[/white]\n"
-            f"[cyan]Started:[/cyan] [white]{self.session_start.strftime('%I:%M %p')}[/white]\n"
-            f"[cyan]Type 'exit' to quit[/cyan]",
-            border_style="dim",
-            box=box.ROUNDED,
-            padding=(0, 2)
+        header_content = Group(
+            banner,
+            Align.center(tagline),
         )
-        self.console.print(info_panel)
+
+        self.console.print(header_content)
         self.console.print()
 
-    def print_agent_discovery(self, agents: List[Dict[str, Any]]):
-        """Show agent discovery progress"""
-        self.console.print()
-        self.console.print("[bold cyan]🔌 Discovering Agents...[/bold cyan]")
+        # Session info card
+        session_content = Text()
+        session_content.append(f"{ds.icons.rocket} ", style=ds.colors.accent_purple)
+        session_content.append("Session: ", style=ds.semantic.component['label'])
+        session_content.append(f"{session_id[:12]}...\n", style=ds.colors.accent_teal)
+
+        session_content.append(f"{ds.icons.clock} ", style=ds.colors.accent_purple)
+        session_content.append("Started: ", style=ds.semantic.component['label'])
+        session_content.append(f"{self.session_start.strftime('%I:%M:%S %p')}\n", style=ds.colors.text_primary)
+
+        session_content.append(f"{ds.icons.info} ", style=ds.colors.accent_purple)
+        session_content.append("Quick Tips: ", style=ds.semantic.component['label'])
+        session_content.append("Type ", style=ds.colors.text_secondary)
+        session_content.append("help", style=f"bold {ds.colors.accent_amber}")
+        session_content.append(" for keyboard shortcuts, ", style=ds.colors.text_secondary)
+        session_content.append("exit", style=f"bold {ds.colors.error}")
+        session_content.append(" to quit", style=ds.colors.text_secondary)
+
+        info_panel = Panel(
+            session_content,
+            border_style=ds.colors.border_bright,
+            box=ds.box_styles.panel_default,
+            padding=ds.spacing.padding_md
+        )
+        self.console.print(Padding(info_panel, (0, 2)))
         self.console.print()
 
-        # Create table
+    # ═══════════════════════════════════════════════════════════════
+    # AGENT DISCOVERY & LOADING
+    # ═══════════════════════════════════════════════════════════════
+
+    def print_agent_discovery_start(self):
+        """Show agent discovery start with animation"""
+        self.console.print()
+
+        header = Text()
+        header.append(f"{ds.icons.wrench} ", style=ds.colors.accent_purple)
+        header.append("Discovering Agents...", style=f"bold {ds.colors.primary_500}")
+
+        self.console.print(header)
+        self.console.print()
+
+    def print_agent_table(self, loaded_agents: List[Dict[str, Any]], failed_agents: List[str] = None):
+        """Display beautiful agent capability table"""
+
+        # Create modern table
         table = Table(
             show_header=True,
-            header_style="bold cyan",
-            border_style="dim",
-            box=box.ROUNDED,
-            padding=(0, 1)
+            header_style=f"bold {ds.colors.text_primary}",
+            border_style=ds.colors.border_bright,
+            box=ds.box_styles.table_default,
+            padding=(0, 2),
+            expand=False
         )
 
-        table.add_column("Agent", style="white", width=20)
-        table.add_column("Status", width=15)
-        table.add_column("Capabilities", style="dim", width=40)
+        table.add_column(f"{ds.icons.agent} Agent", style=f"bold {ds.colors.accent_purple}", width=18)
+        table.add_column(f"{ds.icons.gear} Capabilities", style=ds.colors.text_secondary, width=50)
+        table.add_column("Count", justify="right", style=ds.colors.accent_teal, width=8)
 
-        for agent in agents:
-            name = agent['name']
-            status = agent['status']
+        for agent in loaded_agents:
+            name = agent['name'].replace('_', ' ').title()
             caps = agent.get('capabilities', [])
 
-            if status == 'loaded':
-                status_text = "[green]✓ Loaded[/green]"
-            elif status == 'failed':
-                status_text = "[yellow]⚠ Skipped[/yellow]"
-            else:
-                status_text = "[dim]...[/dim]"
-
-            caps_text = ", ".join(caps[:3])
+            # Format capabilities nicely
             if len(caps) > 3:
-                caps_text += f" (+{len(caps)-3} more)"
+                caps_text = ", ".join(caps[:3])
+                caps_text = f"{caps_text}..."
+            else:
+                caps_text = ", ".join(caps) if caps else "General purpose"
 
-            table.add_row(name.title(), status_text, caps_text)
+            # Icon for agent type
+            agent_icon = self._get_agent_icon(agent['name'])
 
-        self.console.print(table)
+            table.add_row(
+                f"{agent_icon} {name}",
+                caps_text,
+                f"{len(caps)}"
+            )
+
+        self.console.print(Padding(table, (0, 2)))
+
+        # Show failed agents if any
+        if failed_agents and len(failed_agents) > 0:
+            warning = Text()
+            warning.append(f"\n{ds.icons.warning} ", style=ds.colors.warning)
+            warning.append(f"Skipped {len(failed_agents)} agent(s): ", style=ds.colors.warning)
+            warning.append(", ".join(failed_agents), style=ds.colors.text_tertiary)
+            self.console.print(warning)
+
         self.console.print()
 
     def print_loaded_summary(self, loaded_count: int, failed_count: int):
-        """Print summary after agent loading"""
+        """Print beautiful summary after agent loading"""
+
+        summary = Text()
+        summary.append(f"\n{ds.icons.success} ", style=ds.colors.success)
+        summary.append(f"Loaded ", style=ds.colors.success)
+        summary.append(f"{loaded_count}", style=f"bold {ds.colors.success}")
+        summary.append(f" agent(s) successfully", style=ds.colors.success)
+
         if failed_count > 0:
-            summary = (
-                f"[green]✓[/green] Loaded [bold white]{loaded_count}[/bold white] agent(s)  "
-                f"[yellow]⚠[/yellow] Skipped [bold white]{failed_count}[/bold white]"
-            )
-        else:
-            summary = f"[green]✓[/green] All [bold white]{loaded_count}[/bold white] agents loaded successfully"
+            summary.append(f"  {ds.icons.warning} ", style=ds.colors.warning)
+            summary.append(f"{failed_count} skipped", style=ds.colors.warning)
 
         panel = Panel(
-            summary,
-            border_style="green",
-            box=box.HEAVY,
-            padding=(0, 2)
+            Align.center(summary),
+            border_style=ds.colors.success,
+            box=ds.box_styles.panel_emphasis,
+            padding=ds.spacing.padding_sm
         )
+
         self.console.print(panel)
         self.console.print()
 
+    def _get_agent_icon(self, agent_name: str) -> str:
+        """Get appropriate icon for agent type"""
+        icon_map = {
+            'slack': '💬',
+            'jira': '📊',
+            'github': '🐙',
+            'notion': '📝',
+            'browser': '🌐',
+            'scraper': '🕷',
+            'code_reviewer': '👁',
+            'email': '📧',
+        }
+
+        for key, icon in icon_map.items():
+            if key in agent_name.lower():
+                return icon
+
+        return ds.icons.agent
+
+    # ═══════════════════════════════════════════════════════════════
+    # USER INTERACTION
+    # ═══════════════════════════════════════════════════════════════
+
     def print_prompt(self):
-        """Print user input prompt"""
+        """Print modern user input prompt"""
         prompt_text = Text()
-        prompt_text.append("┃ ", style="bold cyan")
-        prompt_text.append("You", style="bold white")
-        prompt_text.append(" › ", style="dim")
+        prompt_text.append("\n┃ ", style=f"bold {ds.colors.border_bright}")
+        prompt_text.append(f"{ds.icons.user} ", style=ds.colors.accent_teal)
+        prompt_text.append("You", style=f"bold {ds.colors.text_primary}")
+        prompt_text.append("  ", style="")
+        prompt_text.append("›", style=f"dim {ds.colors.text_tertiary}")
+        prompt_text.append(" ", style="")
 
         self.console.print(prompt_text, end="")
 
-    def print_user_message(self, message: str):
-        """Echo user message with formatting"""
-        # Don't echo since we already have prompt
-        pass
-
     def print_thinking(self):
-        """Show thinking indicator"""
+        """Show intelligent thinking indicator"""
         thinking = Text()
-        thinking.append("┃ ", style="bold cyan")
-        thinking.append("Assistant", style="bold #00D9FF")
-        thinking.append(" is thinking...", style="dim italic")
+        thinking.append("┃ ", style=f"bold {ds.colors.border_bright}")
+        thinking.append(f"{ds.icons.thinking} ", style=ds.colors.accent_purple)
+        thinking.append("Assistant", style=f"bold {ds.colors.primary_500}")
+        thinking.append(" is processing", style=ds.colors.text_secondary)
+        thinking.append("...", style=f"dim italic {ds.colors.text_tertiary}")
+
         self.console.print(thinking)
 
     def print_assistant_header(self):
         """Print assistant response header"""
         header = Text()
-        header.append("\n┃ ", style="bold cyan")
-        header.append("Assistant", style="bold #00D9FF")
+        header.append("\n┃ ", style=f"bold {ds.colors.border_bright}")
+        header.append(f"{ds.icons.sparkle} ", style=ds.colors.accent_purple)
+        header.append("Assistant", style=f"bold {ds.colors.primary_500}")
+
         self.console.print(header)
-        self.console.print("┃", style="bold cyan")
+
+    # ═══════════════════════════════════════════════════════════════
+    # RESPONSE RENDERING
+    # ═══════════════════════════════════════════════════════════════
 
     def print_response(self, response: str):
-        """Print assistant response with markdown rendering"""
-        # Parse and render markdown
+        """Print assistant response with beautiful markdown rendering"""
         self.print_assistant_header()
 
-        # Simple approach: just render the whole response as markdown
-        md = Markdown(response)
+        # Clean response text and normalize formatting
+        cleaned_response = response.strip()
 
-        # Create a panel for the response
+        # Fix common markdown rendering issues
+        # Remove excessive indentation that causes code block interpretation
+        lines = cleaned_response.split('\n')
+        normalized_lines = []
+
+        for line in lines:
+            # If line starts with excessive spaces (>4), reduce to maintain list structure
+            if line.startswith('     '):  # 5+ spaces
+                # Keep list indentation but not excessive
+                normalized_lines.append('  ' + line.lstrip())
+            else:
+                normalized_lines.append(line)
+
+        cleaned_response = '\n'.join(normalized_lines)
+
+        # Render markdown with proper settings
+        md = Markdown(
+            cleaned_response,
+            code_theme="monokai",
+            inline_code_lexer="python",
+            inline_code_theme="monokai",
+            justify="left"
+        )
+
+        # Create elegant response panel
         response_panel = Panel(
             md,
-            border_style="dim cyan",
-            box=box.ROUNDED,
-            padding=(1, 2),
-            title="[dim]Response[/dim]",
+            border_style=ds.colors.border,
+            box=ds.box_styles.panel_subtle,
+            padding=ds.spacing.padding_lg,
+            title=f"[{ds.colors.text_tertiary}]{ds.icons.arrow_right} Response[/]",
             title_align="left"
         )
 
         self.console.print(response_panel)
         self.console.print()
 
+        self.session_stats['successes'] += 1
+
     def print_streaming_response(self, response_generator):
-        """Stream response as it's generated (future enhancement)"""
-        # For now, just collect and print
+        """Stream response with live updates (future enhancement)"""
+        # For now, collect and print
         full_response = ""
         for chunk in response_generator:
             full_response += chunk
 
         self.print_response(full_response)
 
+    # ═══════════════════════════════════════════════════════════════
+    # TOOL CALLS & AGENT EXECUTION
+    # ═══════════════════════════════════════════════════════════════
+
     def print_tool_call(self, agent_name: str, tool_name: str):
-        """Show when a tool is being called"""
+        """Show modern tool call indicator"""
         # Track agent calls
         self.agent_calls[agent_name] = self.agent_calls.get(agent_name, 0) + 1
+        self.session_stats['agent_calls_by_type'][agent_name] = \
+            self.session_stats['agent_calls_by_type'].get(agent_name, 0) + 1
 
         status = Text()
-        status.append("┃  ", style="bold cyan")
-        status.append("🔧 ", style="yellow")
-        status.append(f"Calling ", style="dim")
-        status.append(agent_name.title(), style="bold #FF88FF")
-        status.append(f" → {tool_name}", style="dim")
+        status.append("┃  ", style=f"bold {ds.colors.border_bright}")
+        status.append(f"{ds.icons.lightning} ", style=ds.colors.accent_amber)
+        status.append("Calling ", style=ds.colors.text_tertiary)
+        status.append(agent_name.replace('_', ' ').title(), style=f"bold {ds.colors.accent_purple}")
+
+        if tool_name and tool_name != "processing...":
+            status.append(f" {ds.icons.arrow_right} ", style=ds.colors.text_tertiary)
+            status.append(tool_name, style=ds.colors.text_secondary)
 
         self.console.print(status)
 
     def print_tool_result(self, success: bool, message: Optional[str] = None):
-        """Show tool result"""
+        """Show beautiful tool result"""
+        status = Text()
+        status.append("┃  ", style=f"bold {ds.colors.border_bright}")
+
         if success:
-            status = Text()
-            status.append("┃  ", style="bold cyan")
-            status.append("✓ ", style="green")
-            status.append("Success", style="dim green")
+            status.append(f"{ds.icons.success} ", style=ds.colors.success)
+            status.append("Success", style=f"bold {ds.colors.success}")
             if message:
-                status.append(f" • {message[:50]}", style="dim")
-            self.console.print(status)
+                truncated = message[:60] + "..." if len(message) > 60 else message
+                status.append(f" {ds.icons.bullet} ", style=ds.colors.text_tertiary)
+                status.append(truncated, style=ds.colors.text_secondary)
+            self.session_stats['successes'] += 1
         else:
-            status = Text()
-            status.append("┃  ", style="bold cyan")
-            status.append("✗ ", style="red")
-            status.append("Failed", style="dim red")
+            status.append(f"{ds.icons.error} ", style=ds.colors.error)
+            status.append("Failed", style=f"bold {ds.colors.error}")
             if message:
-                status.append(f" • {message[:50]}", style="dim")
-            self.console.print(status)
+                truncated = message[:60] + "..." if len(message) > 60 else message
+                status.append(f" {ds.icons.bullet} ", style=ds.colors.text_tertiary)
+                status.append(truncated, style=ds.colors.error_light)
+            self.session_stats['errors'] += 1
 
-    def print_confirmation_prompt(
-        self,
-        agent_name: str,
-        operation: str,
-        destination: str,
-        content: str,
-        metadata: Dict[str, Any]
-    ) -> str:
-        """Beautiful confirmation dialog"""
-        self.console.print()
+        self.console.print(status)
 
-        # Header
-        self.console.rule(
-            f"[bold yellow]⚠  Confirmation Required[/bold yellow]",
-            style="yellow"
-        )
+    # ═══════════════════════════════════════════════════════════════
 
-        # Preview panel
-        preview_text = f"[bold cyan]Agent:[/bold cyan] {agent_name.title()}\n"
-        preview_text += f"[bold cyan]Operation:[/bold cyan] {operation}\n"
-        preview_text += f"[bold cyan]Destination:[/bold cyan] {destination}\n\n"
-        preview_text += f"[bold cyan]Content:[/bold cyan]\n"
-        preview_text += f"[white]{content}[/white]\n"
-
-        if metadata:
-            preview_text += f"\n[dim]Metadata: {metadata}[/dim]"
-
-        panel = Panel(
-            preview_text,
-            title="[bold]Preview[/bold]",
-            border_style="yellow",
-            box=box.DOUBLE,
-            padding=(1, 2)
-        )
-        self.console.print(panel)
-
-        # Options
-        options_table = Table(
-            show_header=False,
-            border_style="dim",
-            box=box.SIMPLE,
-            padding=(0, 2)
-        )
-        options_table.add_row("[green bold]a[/green bold]", "[green]Approve and send[/green]")
-        options_table.add_row("[yellow bold]e[/yellow bold]", "[yellow]Edit manually[/yellow]")
-        options_table.add_row("[blue bold]m[/blue bold]", "[blue]Ask AI to modify[/blue]")
-        options_table.add_row("[red bold]r[/red bold]", "[red]Reject (don't send)[/red]")
-
-        self.console.print(options_table)
-        self.console.print()
-
-        # Get choice
-        choice = Prompt.ask(
-            "[bold cyan]Your decision[/bold cyan]",
-            choices=["a", "e", "m", "r"],
-            default="a"
-        )
-
-        return choice
+    # ═══════════════════════════════════════════════════════════════
+    # ERRORS & NOTIFICATIONS
+    # ═══════════════════════════════════════════════════════════════
 
     def print_error(self, error: str, traceback_str: Optional[str] = None):
-        """Print formatted error"""
+        """Print beautiful, informative error message"""
         self.console.print()
+        self.session_stats['errors'] += 1
+
+        error_content = Text()
+        error_content.append(f"{ds.icons.error} Error\n\n", style=f"bold {ds.colors.error}")
+        error_content.append(error, style=ds.colors.error_light)
 
         error_panel = Panel(
-            f"[bold red]✗ Error[/bold red]\n\n{error}",
-            title="[red]Error[/red]",
-            border_style="red",
-            box=box.HEAVY,
-            padding=(1, 2)
+            error_content,
+            title=f"[{ds.colors.error}]⚠ Error Occurred[/]",
+            border_style=ds.colors.error,
+            box=ds.box_styles.panel_emphasis,
+            padding=ds.spacing.padding_lg
         )
         self.console.print(error_panel)
 
         if traceback_str and self.verbose:
-            self.console.print("\n[dim]Traceback:[/dim]")
+            self.console.print(f"\n[{ds.colors.text_tertiary}]Stack Trace:[/]")
             syntax = Syntax(
                 traceback_str,
                 "python",
                 theme="monokai",
-                line_numbers=False
+                line_numbers=False,
+                background_color=ds.colors.background
             )
-            self.console.print(syntax)
+            self.console.print(Padding(syntax, (0, 2)))
 
         self.console.print()
 
-    def print_session_stats(self, stats: Dict[str, Any]):
-        """Print session statistics"""
-        self.console.print()
-        self.console.rule("[bold cyan]Session Summary[/bold cyan]", style="cyan")
+    def show_notification(self, message: str, type: str = "info"):
+        """Show elegant notification"""
+        type_config = {
+            'success': (ds.icons.success, ds.colors.success),
+            'error': (ds.icons.error, ds.colors.error),
+            'warning': (ds.icons.warning, ds.colors.warning),
+            'info': (ds.icons.info, ds.colors.info),
+        }
 
+        icon, color = type_config.get(type, (ds.icons.info, ds.colors.info))
+
+        notification = Text()
+        notification.append(f"{icon} ", style=color)
+        notification.append(message, style=color)
+
+        panel = Panel(
+            notification,
+            border_style=color,
+            box=ds.box_styles.minimal,
+            padding=ds.spacing.padding_sm
+        )
+
+        self.console.print(panel)
+        self.console.print()
+
+    # ═══════════════════════════════════════════════════════════════
+    # SESSION MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════
+
+    def print_session_stats(self, stats: Optional[Dict[str, Any]] = None):
+        """Print beautiful session statistics dashboard"""
+        self.console.print()
+
+        # Calculate duration
+        duration = datetime.now() - self.session_start
+        hours = int(duration.total_seconds() // 3600)
+        minutes = int((duration.total_seconds() % 3600) // 60)
+        seconds = int(duration.total_seconds() % 60)
+
+        if hours > 0:
+            duration_str = f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            duration_str = f"{minutes}m {seconds}s"
+        else:
+            duration_str = f"{seconds}s"
+
+        # Header
+        header = Text()
+        header.append(f"{ds.icons.calendar} ", style=ds.colors.accent_purple)
+        header.append("Session Summary", style=f"bold {ds.colors.primary_500}")
+
+        self.console.rule(header, style=ds.colors.primary_500)
+        self.console.print()
+
+        # Stats table
         stats_table = Table(
             show_header=False,
-            border_style="cyan",
-            box=box.ROUNDED,
-            padding=(0, 2)
+            border_style=ds.colors.border,
+            box=ds.box_styles.panel_default,
+            padding=(0, 3),
+            expand=True
         )
 
+        # Core stats
         stats_table.add_row(
-            "[cyan]Duration[/cyan]",
-            f"[white]{stats.get('duration', 'N/A')}[/white]"
+            f"[{ds.colors.text_secondary}]{ds.icons.clock} Duration[/]",
+            f"[bold {ds.colors.text_primary}]{duration_str}[/]"
         )
         stats_table.add_row(
-            "[cyan]Messages[/cyan]",
-            f"[white]{stats.get('message_count', 0)}[/white]"
+            f"[{ds.colors.text_secondary}]{ds.icons.user} Messages[/]",
+            f"[bold {ds.colors.text_primary}]{self.message_count}[/]"
         )
         stats_table.add_row(
-            "[cyan]Agent Calls[/cyan]",
-            f"[white]{stats.get('agent_calls', 0)}[/white]"
-        )
-        stats_table.add_row(
-            "[cyan]Success Rate[/cyan]",
-            f"[green]{stats.get('success_rate', 'N/A')}[/green]"
+            f"[{ds.colors.text_secondary}]{ds.icons.agent} Agent Calls[/]",
+            f"[bold {ds.colors.text_primary}]{sum(self.agent_calls.values())}[/]"
         )
 
-        self.console.print(stats_table)
+        # Success rate
+        total_ops = self.session_stats['successes'] + self.session_stats['errors']
+        if total_ops > 0:
+            success_rate = (self.session_stats['successes'] / total_ops) * 100
+            success_color = ds.colors.success if success_rate > 80 else ds.colors.warning if success_rate > 50 else ds.colors.error
+            stats_table.add_row(
+                f"[{ds.colors.text_secondary}]{ds.icons.star} Success Rate[/]",
+                f"[bold {success_color}]{success_rate:.1f}%[/]"
+            )
+
+
+        self.console.print(Padding(stats_table, (0, 2)))
+
+        # Agent breakdown if available
+        if self.agent_calls:
+            self.console.print()
+            self.console.print(f"[{ds.colors.text_secondary}]Most Used Agents:[/]")
+
+            sorted_agents = sorted(self.agent_calls.items(), key=lambda x: x[1], reverse=True)
+            for agent, count in sorted_agents[:5]:  # Top 5
+                agent_name = agent.replace('_', ' ').title()
+                icon = self._get_agent_icon(agent)
+                self.console.print(f"  [{ds.colors.accent_purple}]{icon} {agent_name}[/]: [{ds.colors.accent_teal}]{count}[/]")
+
         self.console.print()
 
     def print_goodbye(self):
-        """Print goodbye message"""
+        """Print beautiful goodbye message"""
         self.console.print()
 
         goodbye_text = Text()
-        goodbye_text.append("┃ ", style="bold cyan")
-        goodbye_text.append("👋 ", style="")
-        goodbye_text.append("Goodbye! ", style="bold white")
-        goodbye_text.append("Thanks for using the orchestrator.", style="dim")
+        goodbye_text.append(f"{ds.icons.wave} ", style="")
+        goodbye_text.append("Goodbye! ", style=f"bold {ds.colors.text_primary}")
+        goodbye_text.append("Thanks for using the AI Workspace Orchestrator.", style=ds.colors.text_secondary)
+        goodbye_text.append("\n")
+        goodbye_text.append(f"{ds.icons.sparkle} ", style=ds.colors.accent_teal)
+        goodbye_text.append("Have a great day!", style=f"italic {ds.colors.accent_teal}")
 
-        self.console.print(goodbye_text)
+        panel = Panel(
+            Align.center(goodbye_text),
+            border_style=ds.colors.primary_500,
+            box=ds.box_styles.panel_default,
+            padding=ds.spacing.padding_md
+        )
+
+        self.console.print(panel)
         self.console.print()
 
+    # ═══════════════════════════════════════════════════════════════
+    # HELP SYSTEM
+    # ═══════════════════════════════════════════════════════════════
+
+    def print_help(self):
+        """Show comprehensive help overlay with keyboard shortcuts"""
+        self.console.clear()
+
+        # Header
+        header = Text()
+        header.append(f"{ds.icons.info} ", style=ds.colors.info)
+        header.append("Help & Keyboard Shortcuts", style=f"bold {ds.colors.primary_500}")
+
+        self.console.rule(header, style=ds.colors.primary_500)
+        self.console.print()
+
+        # Commands section
+        commands_table = Table(
+            title=f"[bold {ds.colors.accent_purple}]{ds.icons.gear} Available Commands[/]",
+            show_header=True,
+            header_style=f"bold {ds.colors.text_primary}",
+            border_style=ds.colors.border,
+            box=ds.box_styles.table_default,
+            padding=(0, 2)
+        )
+
+        commands_table.add_column("Command", style=f"bold {ds.colors.accent_teal}")
+        commands_table.add_column("Description", style=ds.colors.text_secondary)
+
+        commands_table.add_row("help", "Show this help screen")
+        commands_table.add_row("stats", "Display session statistics")
+        commands_table.add_row("agents", "List all available agents")
+        commands_table.add_row("clear", "Clear the screen")
+        commands_table.add_row("exit / quit", "Exit the application")
+
+        self.console.print(commands_table)
+        self.console.print()
+
+        # Tips section
+        tips_panel = Panel(
+            f"[{ds.colors.text_secondary}]{ds.icons.sparkle} Tip: Use natural language to interact with agents\n"
+            f"{ds.icons.lightning} Example: \"Create a Jira ticket for the login bug and notify the team on Slack\"\n"
+            f"{ds.icons.info} The system will automatically route your request to the appropriate agents[/]",
+            title=f"[{ds.colors.accent_amber}]{ds.icons.star} Pro Tips[/]",
+            border_style=ds.colors.accent_amber,
+            box=ds.box_styles.panel_default,
+            padding=ds.spacing.padding_md
+        )
+        self.console.print(tips_panel)
+        self.console.print()
+
+        # Wait for user
+        Prompt.ask(f"\n[{ds.colors.text_tertiary}]Press Enter to continue[/]", default="")
+
+    # ═══════════════════════════════════════════════════════════════
+    # PROGRESS & LOADING
+    # ═══════════════════════════════════════════════════════════════
+
+    @contextmanager
+    def show_status(self, message: str):
+        """Show animated status indicator"""
+        with self.console.status(
+            f"[{ds.colors.primary_500}]{message}...[/]",
+            spinner="dots",
+            spinner_style=ds.colors.primary_500
+        ) as status:
+            yield status
+
     def show_progress(self, description: str, total: Optional[int] = None):
-        """Show progress bar for long operations"""
+        """Create beautiful progress bar for long operations"""
         return Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            SpinnerColumn(spinner_name="dots", style=ds.colors.primary_500),
+            TextColumn("[{task.description}]", style=ds.colors.text_secondary),
+            BarColumn(
+                complete_style=ds.colors.success,
+                finished_style=ds.colors.success,
+                bar_width=40
+            ),
+            TextColumn("[{task.percentage:>3.0f}%]", style=ds.colors.text_primary),
+            TimeElapsedColumn(),
             console=self.console
         )
 
-    def print_divider(self):
-        """Print subtle divider"""
-        self.console.print(Rule(style="dim"))
-
-    # Helper methods
-
-    def _split_markdown(self, text: str) -> List[tuple]:
-        """Split markdown into text and code blocks"""
-        parts = []
-        current = ""
-        in_code = False
-        code_block = ""
-
-        lines = text.split('\n')
-        for line in lines:
-            if line.strip().startswith('```'):
-                if in_code:
-                    # End code block
-                    parts.append(('code', code_block))
-                    code_block = ""
-                    in_code = False
-                else:
-                    # Start code block
-                    if current:
-                        parts.append(('text', current))
-                        current = ""
-                    in_code = True
-                    code_block = line + '\n'
-            else:
-                if in_code:
-                    code_block += line + '\n'
-                else:
-                    current += line + '\n'
-
-        # Add remaining
-        if current:
-            parts.append(('text', current))
-        if code_block:
-            parts.append(('code', code_block))
-
-        return parts
-
-    def _parse_code_block(self, block: str) -> tuple:
-        """Extract language and code from code block"""
-        lines = block.strip().split('\n')
-        if lines[0].startswith('```'):
-            lang = lines[0][3:].strip() or 'text'
-            code = '\n'.join(lines[1:])
-            if code.endswith('```'):
-                code = code[:-3].strip()
-            return lang, code
-        return 'text', block
+    def print_divider(self, text: str = ""):
+        """Print elegant divider"""
+        if text:
+            self.console.rule(f"[{ds.colors.text_tertiary}]{text}[/]", style=ds.colors.border)
+        else:
+            self.console.print(f"[{ds.colors.border}]{'─' * 70}[/]")
 
 
-# Convenience instance
+# ═══════════════════════════════════════════════════════════════
+# CONVENIENCE INSTANCE
+# ═══════════════════════════════════════════════════════════════
+
 enhanced_ui = EnhancedTerminalUI()

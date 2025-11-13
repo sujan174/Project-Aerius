@@ -14,11 +14,6 @@ class Config:
     ENRICHMENT_TIMEOUT = float(os.getenv('ENRICHMENT_TIMEOUT', '5.0'))
     LLM_OPERATION_TIMEOUT = float(os.getenv('LLM_TIMEOUT', '30.0'))
 
-    # Confirmation Queue Settings
-    BATCH_TIMEOUT_MS = int(os.getenv('BATCH_TIMEOUT_MS', '1000'))
-    MAX_BATCH_SIZE = int(os.getenv('MAX_BATCH_SIZE', '10'))
-    MAX_PENDING_ACTIONS = int(os.getenv('MAX_PENDING_ACTIONS', '100'))
-
     # Retry Configuration
     MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRIES', '3'))
     RETRY_BACKOFF_FACTOR = float(os.getenv('RETRY_BACKOFF', '2.0'))
@@ -35,13 +30,6 @@ class Config:
     # Security Settings
     ENABLE_INPUT_SANITIZATION = os.getenv('ENABLE_SANITIZATION', 'true').lower() == 'true'
     MAX_REGEX_PATTERN_LENGTH = int(os.getenv('MAX_REGEX_LENGTH', '1000'))
-
-    # Confirmation Preferences
-    CONFIRM_SLACK_MESSAGES = os.getenv('CONFIRM_SLACK_MESSAGES', 'true').lower() == 'true'
-    CONFIRM_JIRA_OPERATIONS = os.getenv('CONFIRM_JIRA_OPERATIONS', 'true').lower() == 'true'
-    CONFIRM_DELETES = os.getenv('CONFIRM_DELETES', 'true').lower() == 'true'
-    CONFIRM_BULK_OPERATIONS = os.getenv('CONFIRM_BULK_OPERATIONS', 'true').lower() == 'true'
-    CONFIRM_PUBLIC_POSTS = os.getenv('CONFIRM_PUBLIC_POSTS', 'true').lower() == 'true'
 
     # Logging Configuration
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -72,8 +60,6 @@ class Config:
             'agent_timeout': cls.AGENT_OPERATION_TIMEOUT,
             'enrichment_timeout': cls.ENRICHMENT_TIMEOUT,
             'llm_timeout': cls.LLM_OPERATION_TIMEOUT,
-            'batch_timeout_ms': cls.BATCH_TIMEOUT_MS,
-            'max_batch_size': cls.MAX_BATCH_SIZE,
             'max_retry_attempts': cls.MAX_RETRY_ATTEMPTS,
             'max_instruction_length': cls.MAX_INSTRUCTION_LENGTH,
             'verbose': cls.VERBOSE,

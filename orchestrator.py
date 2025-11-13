@@ -31,8 +31,6 @@ from intelligence import (
 # Import terminal UI
 from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
 
-# Old confirmation system removed - using MandatoryConfirmationEnforcer instead
-
 # Import production utilities
 from config import Config
 from core.logger import get_logger
@@ -47,7 +45,7 @@ from core.observability import (
 
 # Import new enhancement systems
 from core.resilience import RetryManager, UndoManager, UndoableOperationType
-from core.user import UserPreferenceManager, AnalyticsCollector, MandatoryConfirmationEnforcer
+from core.user import UserPreferenceManager, AnalyticsCollector
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -123,18 +121,6 @@ class OrchestratorAgent:
         self.knowledge_base = WorkspaceKnowledge()
         self.session_id = str(uuid.uuid4())
         self.shared_context = SharedContext(self.session_id)
-
-        # Feature #20: Confirmation preferences (loaded from Config)
-        # NOTE: Confirmations now handled by MandatoryConfirmationEnforcer for Slack/Notion
-        self.confirmation_prefs = {
-            'always_confirm_deletes': Config.CONFIRM_DELETES,
-            'always_confirm_bulk': Config.CONFIRM_BULK_OPERATIONS,
-            'bulk_threshold': 5,
-            'confirm_public_posts': Config.CONFIRM_PUBLIC_POSTS,
-            'confirm_ambiguous': True,
-            'confirm_slack_messages': Config.CONFIRM_SLACK_MESSAGES,  # Always confirm Slack messages (send/notify actions)
-            'confirm_jira_operations': Config.CONFIRM_JIRA_OPERATIONS,  # Always confirm Jira operations (create/update/delete)
-        }
 
         # Feature #8: Intelligent Retry tracking
         self.retry_tracker: Dict[str, Dict[str, Any]] = {}  # Track retry attempts per operation
@@ -218,9 +204,6 @@ class OrchestratorAgent:
         # 5. Error Message Enhancer - Better error messages
         self.error_enhancer = ErrorMessageEnhancer(verbose=self.verbose)
 
-        # 6. Mandatory Confirmation - Human-in-the-loop for Slack/Notion
-        self.message_confirmer = MandatoryConfirmationEnforcer(verbose=self.verbose)
-
         # Load user preferences from file if exists
         self.prefs_file = Path(f"data/preferences/{user_id}.json")
         self.prefs_file.parent.mkdir(parents=True, exist_ok=True)
@@ -279,9 +262,9 @@ When delegating to an agent:
 2. Extract relevant information from A's result
 3. Pass that information as context to task B
 
-**Information Gathering Then Action**: For tasks requiring confirmation or specific details:
+**Information Gathering Then Action**: For tasks requiring specific details:
 1. First, gather all necessary information (search, list, query)
-2. Present findings to user if confirmation is needed
+2. Present findings to user
 3. Then execute the action with complete information
 
 **Multi-Platform Coordination**: When working across multiple platforms:
@@ -307,7 +290,7 @@ When delegating to an agent:
 
 # Safety and Limitations
 
-- Always confirm before taking irreversible actions (deletions, major changes, public posts)
+- Consider impact before taking irreversible actions (deletions, major changes, public posts)
 - If a request is ambiguous and could have significant consequences, seek clarification
 - Stay within the capabilities of your available agents - don't promise what you cannot deliver
 - If you encounter repeated failures, explain the situation clearly rather than continuing to retry
@@ -638,8 +621,7 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                     'error_count': 0
                 }
 
-                # Register agent with confirmation system so it can access prefetched metadata
-                self.message_confirmer.register_agent(agent_name, agent_instance)
+                # Agent registered and ready
 
                 # Log agent initialization in orchestration logger
                 if hasattr(self, 'orch_logger'):
@@ -720,36 +702,6 @@ Provide a clear instruction describing what you want to accomplish.""",
                 error_msg = f"⚠️ {agent_name} agent is currently unavailable: {health.get('error_message', 'Unknown error')}"
                 print(f"{C.YELLOW}{error_msg}{C.ENDC}")
                 return error_msg
-
-        # ===== MANDATORY CONFIRMATION FOR SLACK & NOTION =====
-        # Check if this operation requires human approval
-        if self.message_confirmer.requires_confirmation(agent_name, instruction):
-            if self.verbose:
-                print(f"\n{C.CYAN}📋 This operation requires human confirmation{C.ENDC}")
-
-            should_execute, modified_instruction = self.message_confirmer.confirm_before_execution(
-                agent_name=agent_name,
-                instruction=instruction
-            )
-
-            if not should_execute:
-                # User rejected or wants AI modification
-                if modified_instruction and modified_instruction.startswith("[AI_MODIFICATION_REQUESTED]"):
-                    # User wants AI to modify the message/content
-                    modification_request = modified_instruction.replace("[AI_MODIFICATION_REQUESTED] ", "")
-
-                    # Return a special response that tells the orchestrator to regenerate
-                    # The main intelligence layer will see this and ask Claude to revise
-                    return f"🔄 User requested modification: {modification_request}\n\nPlease revise the {agent_name} operation based on this feedback and try again."
-                else:
-                    # User rejected - don't execute
-                    return "❌ Operation cancelled by user"
-            else:
-                # User approved (possibly with manual edits)
-                # Use the modified instruction if provided
-                if modified_instruction:
-                    instruction = modified_instruction
-                    print(f"{C.GREEN}✅ Approved! Executing...{C.ENDC}")
 
         # Create operation key for retry/analytics tracking
         operation_key = f"{agent_name}_{hashlib.md5(instruction[:100].encode()).hexdigest()[:8]}"
@@ -1180,8 +1132,6 @@ Provide a clear instruction describing what you want to accomplish.""",
                 }
                 continue
 
-            # NOTE: Old confirmation systems removed - now using MandatoryConfirmationEnforcer
-            # The new system confirms operations inline in call_sub_agent() for Slack/Notion
 
             # Feature #8: Intelligent Retry - Track and enhance retries
             operation_key = self._get_operation_key(agent_name, instruction)
@@ -1426,275 +1376,6 @@ Provide a clear instruction describing what you want to accomplish.""",
         else:
             return value
 
-    def _create_operation_signature(self, agent_name: str, instruction: str, risk_type: str) -> str:
-        """
-        Create a unique signature for an operation to track confirmations.
-
-        This prevents asking for confirmation multiple times for the same operation.
-        The signature is based on agent, action type, and key entities (not exact instruction).
-
-        Args:
-            agent_name: Name of the agent
-            instruction: The instruction text
-            risk_type: Type of risk (destructive, bulk, public, ambiguous)
-
-        Returns:
-            A signature string for tracking this operation
-        """
-        import hashlib
-
-        # Normalize instruction to extract intent
-        instruction_lower = instruction.lower().strip()
-
-        # Extract action verb (first meaningful word)
-        action_words = ['create', 'delete', 'update', 'remove', 'add', 'send', 'notify',
-                       'close', 'archive', 'change', 'modify', 'edit']
-        action = 'unknown'
-        for word in action_words:
-            if word in instruction_lower:
-                action = word
-                break
-
-        # Create signature from: agent + action + risk_type
-        # This allows same action to be confirmed once, but different actions to be asked separately
-        sig_base = f"{agent_name}:{action}:{risk_type}"
-
-        # For more specific tracking, include a hash of key instruction parts
-        # This prevents "delete KAN-20" and "delete KAN-30" from being treated as same
-        # But allows repeated calls with exact same instruction to skip confirmation
-        instruction_hash = hashlib.md5(instruction_lower.encode()).hexdigest()[:8]
-
-        signature = f"{sig_base}:{instruction_hash}"
-
-        return signature
-
-    def _detect_risky_operation(self, agent_name: str, instruction: str) -> Dict[str, Any]:
-        """
-        Detect if an operation is risky and needs confirmation (Feature #20)
-
-        Returns:
-            Dict with:
-                needs_confirmation: bool
-                risk_type: str (delete, bulk, public, ambiguous)
-                reason: str (explanation)
-                suggestions: List[str] (alternatives or clarifications needed)
-        """
-        import re
-
-        instruction_lower = instruction.lower()
-
-        # IMPORTANT: Read-only operations NEVER need confirmation
-        read_only_keywords = [
-            'get', 'list', 'show', 'find', 'search', 'fetch', 'read', 'view',
-            'display', 'query', 'retrieve', 'check', 'lookup', 'see'
-        ]
-
-        # Check if this is a read-only operation
-        first_word = instruction_lower.split()[0] if instruction_lower.split() else ''
-        if first_word in read_only_keywords or any(word in instruction_lower.split()[:3] for word in read_only_keywords):
-            # This is a read operation - no confirmation needed
-            return {'needs_confirmation': False}
-
-        # Destructive operations - use word boundaries to avoid false matches
-        # (e.g., "disclose" should not match "close")
-        destructive_keywords = ['delete', 'remove', 'close', 'archive', 'drop', 'destroy']
-
-        # Check for whole words only using word boundaries
-        destructive_pattern = r'\b(' + '|'.join(destructive_keywords) + r')\b'
-        if re.search(destructive_pattern, instruction_lower):
-            if self.confirmation_prefs['always_confirm_deletes']:
-                return {
-                    'needs_confirmation': True,
-                    'risk_type': 'destructive',
-                    'reason': 'This operation will permanently delete or close items',
-                    'suggestions': []
-                }
-
-        # Bulk operations - but be smarter about detection
-        # Only consider it bulk if it's actually acting on multiple items
-        bulk_action_patterns = [
-            'delete all', 'remove all', 'update all', 'change all',
-            'create multiple', 'add multiple', 'send to all', 'notify everyone'
-        ]
-
-        is_bulk = any(pattern in instruction_lower for pattern in bulk_action_patterns)
-
-        # Additional check: if instruction contains numbers > 5, might be bulk
-        numbers = re.findall(r'\b(\d+)\b', instruction_lower)
-        if numbers and any(int(n) > 5 for n in numbers if n.isdigit()):
-            # Check if it's about creating/updating that many items
-            if any(word in instruction_lower for word in ['create', 'delete', 'update', 'add', 'remove']):
-                is_bulk = True
-
-        # Skip confirmation for bulk READ operations
-        if is_bulk:
-            bulk_read_keywords = ['review', 'analyze', 'check', 'scan', 'inspect', 'examine', 'list', 'get', 'show']
-            is_bulk_read = any(word in instruction_lower for word in bulk_read_keywords)
-
-            if is_bulk_read:
-                return {'needs_confirmation': False}
-
-            # Bulk write operation - needs confirmation
-            if self.confirmation_prefs['always_confirm_bulk']:
-                return {
-                    'needs_confirmation': True,
-                    'risk_type': 'bulk',
-                    'reason': f'This will affect multiple items',
-                    'suggestions': ['Consider processing items one at a time for safety']
-                }
-
-        # Public/broadcast operations - use word boundaries for exact matches
-        # Note: @channel and @here are exact matches, not word patterns
-        public_indicators = ['everyone', 'all users', '@channel', '@here', 'company-wide']
-
-        # Check each indicator (special handling for @ symbols)
-        is_public = False
-        for indicator in public_indicators:
-            if indicator.startswith('@'):
-                # For @mentions, do exact substring match
-                if indicator in instruction_lower:
-                    is_public = True
-                    break
-            else:
-                # For phrases with spaces, escape words individually and join with \s+
-                if ' ' in indicator:
-                    words = indicator.split()
-                    escaped_words = [re.escape(word) for word in words]
-                    pattern = r'\b' + r'\s+'.join(escaped_words) + r'\b'
-                else:
-                    # Single word, just escape and add word boundaries
-                    pattern = r'\b' + re.escape(indicator) + r'\b'
-
-                if re.search(pattern, instruction_lower):
-                    is_public = True
-                    break
-
-        if is_public:
-            if self.confirmation_prefs['confirm_public_posts']:
-                return {
-                    'needs_confirmation': True,
-                    'risk_type': 'public',
-                    'reason': 'This will notify many people or post publicly',
-                    'suggestions': ['Consider using a more targeted audience']
-                }
-
-        # Ambiguous operations (Notion database case) - only for write operations
-        write_to_notion_keywords = ['add to', 'put in', 'create in', 'insert into', 'save to']
-        if agent_name == 'notion' and any(phrase in instruction_lower for phrase in write_to_notion_keywords):
-            # Check if we have metadata about databases
-            if hasattr(self.sub_agents.get('notion'), 'metadata_cache'):
-                databases = self.sub_agents['notion'].metadata_cache.get('databases', {})
-                if len(databases) > 1:
-                    return {
-                        'needs_confirmation': True,
-                        'risk_type': 'ambiguous',
-                        'reason': f'Found {len(databases)} databases. Which one should I use?',
-                        'suggestions': [f"- {db.get('title', 'Untitled')}" for db in databases.values()]
-                    }
-
-        # Slack message confirmation (if enabled)
-        if agent_name == 'slack' and self.confirmation_prefs.get('confirm_slack_messages', False):
-            # Check if this is a send/notify operation
-            slack_action_keywords = ['send', 'post', 'message', 'notify', 'broadcast', 'share']
-            if any(word in instruction_lower for word in slack_action_keywords):
-                return {
-                    'needs_confirmation': True,
-                    'risk_type': 'slack_message',
-                    'reason': 'Review and edit message before sending',
-                    'suggestions': []
-                }
-
-        # Jira operation confirmation (if enabled)
-        if agent_name == 'jira' and self.confirmation_prefs.get('confirm_jira_operations', False):
-            # Check if this is a create/update/delete operation
-            jira_action_keywords = ['create', 'update', 'modify', 'delete', 'transition', 'assign', 'add', 'edit']
-            if any(word in instruction_lower for word in jira_action_keywords):
-                return {
-                    'needs_confirmation': True,
-                    'risk_type': 'jira_operation',
-                    'reason': 'Review and edit Jira operation before executing',
-                    'suggestions': []
-                }
-
-        return {'needs_confirmation': False}
-
-    def _ask_confirmation(self, risk_info: Dict[str, Any], instruction: str) -> bool:
-        """
-        Ask user for confirmation before proceeding (Feature #20)
-
-        Returns:
-            bool: True if user confirmed, False if cancelled
-        """
-        # Shorten instruction for display - don't show full code
-        display_instruction = instruction[:200]
-        if len(instruction) > 200:
-            display_instruction += "... (truncated)"
-
-        print(f"\n{C.YELLOW}⚠️  CONFIRMATION REQUIRED{C.ENDC}")
-        print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
-        print(f"{C.CYAN}Operation: {display_instruction}{C.ENDC}")
-        print(f"{C.YELLOW}Risk Type: {risk_info['risk_type'].upper()}{C.ENDC}")
-        print(f"{C.YELLOW}Reason: {risk_info['reason']}{C.ENDC}")
-
-        if risk_info.get('suggestions'):
-            print(f"\n{C.CYAN}💡 Options:{C.ENDC}")
-            for suggestion in risk_info['suggestions'][:5]:  # Max 5 suggestions
-                print(f"  {suggestion}")
-
-        print(f"{C.YELLOW}{'─' * 60}{C.ENDC}")
-
-        while True:
-            response = input(f"{C.BOLD}Proceed? (yes/no): {C.ENDC}").strip().lower()
-            if response in ['yes', 'y']:
-                return True
-            elif response in ['no', 'n']:
-                print(f"{C.RED}✗ Operation cancelled by user{C.ENDC}")
-                return False
-            else:
-                print(f"{C.YELLOW}Please answer 'yes' or 'no'{C.ENDC}")
-
-    def _resolve_ambiguity(self, agent_name: str, instruction: str, risk_info: Dict[str, Any]) -> str:
-        """
-        Help user resolve ambiguous operations (Feature #20)
-
-        For Notion: Ask which database to use
-        For others: Ask for clarification
-
-        Returns:
-            str: Enhanced instruction with resolved ambiguity
-        """
-        if risk_info['risk_type'] == 'ambiguous' and agent_name == 'notion':
-            print(f"\n{C.CYAN}🤔 Which database should I use?{C.ENDC}")
-
-            suggestions = risk_info.get('suggestions', [])
-            for i, suggestion in enumerate(suggestions, 1):
-                print(f"  {i}. {suggestion}")
-            print(f"  0. Cancel")
-
-            while True:
-                try:
-                    choice = input(f"{C.BOLD}Enter number: {C.ENDC}").strip()
-                    choice_num = int(choice)
-
-                    if choice_num == 0:
-                        print(f"{C.RED}✗ Operation cancelled{C.ENDC}")
-                        return None
-
-                    if 1 <= choice_num <= len(suggestions):
-                        selected = suggestions[choice_num - 1]
-                        # Extract database name from suggestion
-                        db_name = selected.replace('- ', '')
-                        # Enhance instruction with specific database
-                        enhanced = instruction.replace('my TODO', f'the "{db_name}" database')
-                        enhanced = enhanced.replace('TODO', f'"{db_name}" database')
-                        print(f"{C.GREEN}✓ Using database: {db_name}{C.ENDC}")
-                        return enhanced
-                    else:
-                        print(f"{C.YELLOW}Invalid choice. Please try again.{C.ENDC}")
-                except ValueError:
-                    print(f"{C.YELLOW}Please enter a number.{C.ENDC}")
-
-        return instruction
 
     def _get_operation_key(self, agent_name: str, instruction: str) -> str:
         """

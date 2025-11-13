@@ -310,7 +310,7 @@ class BaseAgent(ABC):
         OPTIONAL: Apply user's edited parameters back into the instruction.
 
         The orchestrator will call this when a user has edited parameters
-        before confirming. You need to merge the edits back into the instruction
+        before proceeding. You need to merge the edits back into the instruction
         in a format your agent's execute() method can understand.
 
         Args:

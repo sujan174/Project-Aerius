@@ -236,13 +236,13 @@ class Confidence:
         """Should proceed without asking questions?"""
         return self.score > 0.8
 
-    def should_confirm(self) -> bool:
-        """Should confirm with user?"""
-        return 0.5 < self.score <= 0.8
+    def should_review(self) -> bool:
+        """Should review with user?"""
+        return 0.4 < self.score <= 0.8
 
     def should_clarify(self) -> bool:
         """Should ask clarifying questions?"""
-        return self.score <= 0.5
+        return self.score <= 0.4
 
     def __str__(self) -> str:
         return f"{self.level.value}({self.score:.2f})"

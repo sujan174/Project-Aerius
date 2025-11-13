@@ -242,7 +242,7 @@ class Agent(BaseAgent):
 3. Fill each field sequentially
 4. Handle dropdowns and checkboxes
 5. Submit form
-6. Wait for confirmation
+6. Wait for page response
 ```
 
 **Debugging & Troubleshooting**:

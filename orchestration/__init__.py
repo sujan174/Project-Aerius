@@ -1,35 +1,37 @@
 """
-Orchestration system: Manages action verification, confirmation, and execution.
+Orchestration system: Manages action verification and execution.
 
 This package handles the verification workflow that sits between the LLM's
 function calls and actual agent execution.
 
-Main Components:
-- action_model: Core Action dataclass and related types
-- confirmation_queue: Batch queue management
-- action_parser: Parse instructions into structured Actions
-- action_enricher: Fetch context and details for actions before confirmation
+Architecture:
+- actions.py: Action models, parsing, and enrichment
+
+Complete action lifecycle from instruction through execution.
+
+Author: AI System
+Version: 4.0 - Consolidated structure
 """
 
-from .action_model import (
-    Action,
-    ActionType,
-    ActionStatus,
-    RiskLevel,
-    FieldInfo,
-    FieldConstraint,
+# Action management (from actions.py)
+from .actions import (
+    Action, ActionType, RiskLevel, ActionStatus,
+    FieldInfo, FieldConstraint,
+    ActionParser, ActionEnricher
 )
-from .confirmation_queue import ConfirmationQueue, ConfirmationBatch
-from .action_enricher import ActionEnricher
 
 __all__ = [
+    # Action models
     "Action",
     "ActionType",
     "ActionStatus",
     "RiskLevel",
     "FieldInfo",
     "FieldConstraint",
-    "ConfirmationQueue",
-    "ConfirmationBatch",
+
+    # Action processing
+    "ActionParser",
     "ActionEnricher",
 ]
+
+__version__ = "4.0.0"

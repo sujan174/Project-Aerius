@@ -304,7 +304,7 @@ class DuplicateOperationDetector:
     - Notion agent adds tasks successfully
     - Then retries adding same tasks 10+ times
     - Each time gives different/conflicting responses
-    - User keeps confirming thinking they're different operations
+    - User keeps retrying thinking they're different operations
     """
 
     def __init__(self, window_size: int = 5, similarity_threshold: float = 0.8):

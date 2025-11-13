@@ -660,7 +660,7 @@ Would you like me to narrow these results?
 
 Key highlights:
 • Launch date confirmed for Feb 15
-• Design approved by stakeholders
+• Design reviewed by stakeholders
 • QA found 2 minor bugs (both fixed)
 
 Most active: @john (8 messages), @sarah (6 messages)
@@ -687,7 +687,7 @@ No urgent action items outstanding.
 # Special Instructions
 
 **CRITICAL RULES**:
-1. **Always confirm channel/recipient** before sending messages
+1. **Always verify channel/recipient** before sending messages
 2. **Use threads for responses** unless starting new topic
 3. **Format messages properly** with bold, code blocks, lists
 4. **Include context** in every message (assume async reading)
