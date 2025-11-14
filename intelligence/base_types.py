@@ -355,57 +355,6 @@ class PipelineContext:
         return None
 
 
-class RelationType(Enum):
-    ASSIGNED_TO = "assigned_to"
-    CREATED_BY = "created_by"
-    DEPENDS_ON = "depends_on"
-    RELATED_TO = "related_to"
-    PART_OF = "part_of"
-    LINKED_TO = "linked_to"
-    MENTIONS = "mentions"
-    REFERENCES = "references"
-
-
-@dataclass
-class EntityRelationship:
-    from_entity_id: str
-    to_entity_id: str
-    relation_type: RelationType
-    confidence: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.now)
-
-
-@dataclass
-class EntityGraph:
-    """Graph of entities and their relationships"""
-    entities: Dict[str, Entity] = field(default_factory=dict)
-    relationships: List[EntityRelationship] = field(default_factory=list)
-
-    def add_entity(self, entity_id: str, entity: Entity):
-        self.entities[entity_id] = entity
-
-    def add_relationship(self, relationship: EntityRelationship):
-        self.relationships.append(relationship)
-
-    def get_related_entities(
-        self,
-        entity_id: str,
-        relation_type: Optional[RelationType] = None
-    ) -> List[Tuple[RelationType, str, Entity]]:
-        related = []
-        for rel in self.relationships:
-            if rel.from_entity_id == entity_id:
-                if relation_type is None or rel.relation_type == relation_type:
-                    if rel.to_entity_id in self.entities:
-                        related.append((
-                            rel.relation_type,
-                            rel.to_entity_id,
-                            self.entities[rel.to_entity_id]
-                        ))
-        return related
-
-
 @dataclass
 class CacheEntry:
     key: str
@@ -531,10 +480,6 @@ class ValidationResult:
 
     def add_warning(self, warning: str):
         self.warnings.append(warning)
-
-
-def create_entity_id(entity: Entity) -> str:
-    return f"{entity.type.value}:{entity.value}"
 
 
 def hash_content(content: str) -> str:
