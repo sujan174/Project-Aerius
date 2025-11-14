@@ -6,8 +6,8 @@ from typing import List, Dict, Set, Optional, Any, Tuple
 from datetime import datetime, timedelta
 
 from .base_types import (
-    Intent, IntentType, Entity, EntityType, EntityRelationship, EntityGraph,
-    RelationType, create_entity_id, Task, ExecutionPlan, DependencyGraph,
+    Intent, IntentType, Entity, EntityType,
+    Task, ExecutionPlan, DependencyGraph,
     Confidence, ConfidenceLevel
 )
 from .system import get_global_cache, CacheKeyBuilder
@@ -457,7 +457,6 @@ class EntityExtractor:
 
         self.extractions = 0
         self.entities_extracted = 0
-        self.relationships_found = 0
 
         self.patterns = {
             EntityType.ISSUE: [
@@ -739,128 +738,6 @@ class EntityExtractor:
 
         return "; ".join(summary_parts)
 
-    def extract_with_relationships(
-        self,
-        message: str,
-        context: Optional[Dict] = None
-    ) -> Tuple[List[Entity], EntityGraph]:
-        entities = self.extract(message, context)
-
-        graph = EntityGraph()
-
-        for entity in entities:
-            entity_id = create_entity_id(entity)
-            graph.add_entity(entity_id, entity)
-
-        relationships = self._extract_relationships(message, entities)
-
-        for rel in relationships:
-            graph.add_relationship(rel)
-            self.relationships_found += 1
-
-        if self.verbose:
-            print(f"[ENTITY] Found {len(relationships)} relationships")
-
-        return entities, graph
-
-    def _extract_relationships(
-        self,
-        message: str,
-        entities: List[Entity]
-    ) -> List[EntityRelationship]:
-        relationships = []
-        message_lower = message.lower()
-
-        patterns = [
-            (r'assign\s+(\S+)\s+to\s+(\S+)', RelationType.ASSIGNED_TO),
-            (r'(\S+)\s+assigned\s+to\s+(\S+)', RelationType.ASSIGNED_TO),
-            (r'(\S+)\s+depends\s+on\s+(\S+)', RelationType.DEPENDS_ON),
-            (r'(\S+)\s+blocked\s+by\s+(\S+)', RelationType.DEPENDS_ON),
-            (r'link\s+(\S+)\s+to\s+(\S+)', RelationType.LINKED_TO),
-            (r'(\S+)\s+related\s+to\s+(\S+)', RelationType.RELATED_TO),
-            (r'(\S+)\s+linked\s+to\s+(\S+)', RelationType.LINKED_TO),
-            (r'(\S+)\s+mentions?\s+(\S+)', RelationType.MENTIONS),
-        ]
-
-        for pattern, rel_type in patterns:
-            matches = re.finditer(pattern, message_lower, re.IGNORECASE)
-            for match in matches:
-                from_val = match.group(1)
-                to_val = match.group(2)
-
-                from_entity = self._find_entity_by_value(entities, from_val)
-                to_entity = self._find_entity_by_value(entities, to_val)
-
-                if from_entity and to_entity:
-                    from_id = create_entity_id(from_entity)
-                    to_id = create_entity_id(to_entity)
-
-                    relationship = EntityRelationship(
-                        from_entity_id=from_id,
-                        to_entity_id=to_id,
-                        relation_type=rel_type,
-                        confidence=0.85
-                    )
-                    relationships.append(relationship)
-
-        return relationships
-
-    def _find_entity_by_value(
-        self,
-        entities: List[Entity],
-        value: str
-    ) -> Optional[Entity]:
-        value_lower = value.lower().strip('@#')
-
-        for entity in entities:
-            entity_value = entity.value.lower().strip('@#')
-            if entity_value == value_lower or entity_value in value_lower or value_lower in entity_value:
-                return entity
-
-        return None
-
-    def extract_with_ner(
-        self,
-        message: str,
-        context: Optional[Dict] = None
-    ) -> List[Entity]:
-        regex_entities = self.extract(message, context)
-
-        if not self.llm_client:
-            return regex_entities
-
-        try:
-            llm_entities = self._extract_with_llm(message, context)
-            merged_entities = self._merge_entity_results(regex_entities, llm_entities)
-            return merged_entities
-
-        except Exception as e:
-            if self.verbose:
-                print(f"[ENTITY] LLM extraction failed: {e}, using regex results")
-            return regex_entities
-
-    def _extract_with_llm(
-        self,
-        message: str,
-        context: Optional[Dict] = None
-    ) -> List[Entity]:
-        raise NotImplementedError("LLM entity extraction not implemented")
-
-    def _merge_entity_results(
-        self,
-        regex_entities: List[Entity],
-        llm_entities: List[Entity]
-    ) -> List[Entity]:
-        merged = list(llm_entities)
-        llm_values = {e.value.lower() for e in llm_entities}
-
-        for regex_entity in regex_entities:
-            if regex_entity.confidence > 0.85 and regex_entity.value.lower() not in llm_values:
-                merged.append(regex_entity)
-
-        merged = self._deduplicate_entities(merged)
-        return merged
-
     def calibrate_entity_confidence(
         self,
         entities: List[Entity],
@@ -937,24 +814,10 @@ class EntityExtractor:
 
         return entities
 
-    def get_entity_graph_summary(self, graph: EntityGraph) -> str:
-        lines = []
-        lines.append(f"Entity Graph:")
-        lines.append(f"  Entities: {len(graph.entities)}")
-        lines.append(f"  Relationships: {len(graph.relationships)}")
-
-        if graph.relationships:
-            lines.append(f"\nRelationships:")
-            for rel in graph.relationships[:5]:
-                lines.append(f"  • {rel.from_entity_id} --{rel.relation_type.value}-> {rel.to_entity_id}")
-
-        return "\n".join(lines)
-
     def get_metrics(self) -> Dict:
         return {
             'extractions': self.extractions,
             'entities_extracted': self.entities_extracted,
-            'relationships_found': self.relationships_found,
             'avg_entities_per_extraction': (
                 self.entities_extracted / max(self.extractions, 1)
             ),
@@ -963,7 +826,6 @@ class EntityExtractor:
     def reset_metrics(self):
         self.extractions = 0
         self.entities_extracted = 0
-        self.relationships_found = 0
 
 
 class TaskDecomposer:
