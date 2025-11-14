@@ -24,6 +24,7 @@ from intelligence import (
     ConfidenceScorer, ConversationContextManager,
     HybridIntelligenceSystem
 )
+from intelligence.base_types import OperationRiskClassifier, RiskLevel
 
 from core.session_logger import SessionLogger
 from core.input_validator import InputValidator
@@ -311,6 +312,28 @@ These rules are MANDATORY and override all other instructions:
 If you answer "no" to any question, report the error instead.
 
 **Remember**: Fabricating data destroys trust permanently. It is ALWAYS better to say "I couldn't retrieve this" than to provide convincing-sounding fake data. ACCURACY trumps completeness.
+
+# CONFIRMATION HANDLING - CONFIDENCE-BASED AUTONOMY
+
+When you receive a message with "**IMPORTANT**: This operation requires user confirmation":
+
+1. **DO NOT execute the operation yet**
+2. **First explain** what you're about to do in clear, simple terms
+3. **Ask for explicit confirmation** before proceeding
+4. **Wait for user response** - the next message will be their answer
+
+Example responses when confirmation is required:
+```
+I'm about to [action description]. This will:
+- [consequence 1]
+- [consequence 2]
+- [consequence 3]
+
+This is a [destructive/write/medium-risk] operation. Should I proceed?
+```
+
+When user responds with "yes", "confirm", "go ahead", or similar → execute the operation
+When user responds with "no", "cancel", "stop" → acknowledge and don't execute
 
 Remember: Your goal is to be genuinely helpful, making users more productive and their work across platforms smoother and more connected. Think carefully, act decisively, and always keep the user's ultimate goal in mind."""
 
@@ -679,6 +702,70 @@ Provide a clear instruction describing what you want to accomplish.""",
 
             raise RuntimeError(enhanced_msg)
 
+    async def _smart_summarize(self, response: str, max_length: int = 800) -> str:
+        """
+        Smart Summarization: Condense verbose agent outputs for better UX.
+        Only summarizes if response is overly verbose.
+
+        Args:
+            response: The full response text
+            max_length: Maximum length before summarization triggers
+
+        Returns:
+            Summarized response if needed, otherwise original
+        """
+        # Don't summarize short responses or error messages
+        if len(response) < max_length or response.startswith('⚠️') or response.startswith('❌'):
+            return response
+
+        # Don't summarize if response has structured data (lists, code blocks)
+        if '```' in response or response.count('\n-') > 5 or response.count('\n*') > 5:
+            # For structured data, just ensure it's clean
+            return response
+
+        # Count information density - if it's mostly formatting, don't summarize
+        content_chars = len(response.replace(' ', '').replace('\n', ''))
+        if content_chars < max_length * 0.7:
+            return response
+
+        try:
+            # Use LLM to create a concise, actionable summary
+            summarization_prompt = f"""Condense this response into a clear, actionable summary. Keep all critical information:
+- Key outcomes and results
+- Important IDs, URLs, or references
+- Action items or next steps
+- Any warnings or errors
+
+Original response:
+{response}
+
+Provide a concise summary that gives the user exactly what they need to know."""
+
+            if self.verbose:
+                print(f"[SUMMARIZATION] Condensing {len(response)} chars → ")
+
+            # Create a temporary chat for summarization (don't pollute main conversation)
+            summary_llm = self.llm.__class__(self.llm.config)
+            summary_response = await summary_llm.generate_content(summarization_prompt)
+
+            if summary_response and summary_response.text:
+                summarized = summary_response.text.strip()
+
+                if self.verbose:
+                    print(f"{len(summarized)} chars (saved {len(response) - len(summarized)} chars)")
+
+                # Only use summary if it's actually shorter
+                if len(summarized) < len(response) * 0.8:
+                    return summarized
+
+            return response
+
+        except Exception as e:
+            if self.verbose:
+                print(f"[SUMMARIZATION] Failed: {e}")
+            # On error, return original response
+            return response
+
     async def _process_with_intelligence(self, user_message: str) -> Dict:
         """Process user message with hybrid intelligence system"""
         start_time = time.time()
@@ -725,6 +812,21 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Get primary intent (highest confidence)
         primary_intent = intents[0] if intents else None
 
+        # Classify operation risk for confidence-based autonomy
+        risk_level = OperationRiskClassifier.classify_risk(intents)
+        needs_confirmation, confirmation_reason = OperationRiskClassifier.should_confirm(
+            risk_level, confidence.score
+        )
+
+        # Get action recommendation considering both confidence and risk
+        base_action, base_explanation = self.confidence_scorer.get_action_recommendation(confidence)
+
+        # Override action if confirmation needed due to risk
+        if needs_confirmation:
+            action_recommendation = ('confirm', confirmation_reason)
+        else:
+            action_recommendation = (base_action, base_explanation)
+
         intelligence = {
             'intents': intents,
             'entities': entities,
@@ -732,7 +834,9 @@ Provide a clear instruction describing what you want to accomplish.""",
             'resolved_message': resolved_message,
             'context': context_dict,
             'primary_intent': primary_intent,
-            'action_recommendation': self.confidence_scorer.get_action_recommendation(confidence)
+            'risk_level': risk_level,
+            'needs_confirmation': needs_confirmation,
+            'action_recommendation': action_recommendation
         }
 
         if self.verbose:
@@ -740,6 +844,8 @@ Provide a clear instruction describing what you want to accomplish.""",
             print(f"  Intents: {[str(i) for i in intents[:3]]}")
             print(f"  Entities: {len(entities)} found")
             print(f"  Confidence: {confidence}")
+            print(f"  Risk Level: {risk_level.value}")
+            print(f"  Needs Confirmation: {needs_confirmation}")
             print(f"  Recommendation: {intelligence['action_recommendation'][0]}")
 
         return intelligence
@@ -785,6 +891,16 @@ Provide a clear instruction describing what you want to accomplish.""",
             )
             if clarifications:
                 return "I need more information to proceed. " + clarifications[0]
+
+        # Handle confirmation requirement for risky operations
+        if action == 'confirm':
+            # Add confirmation instruction to the message
+            confirmation_note = (
+                "\n\n**IMPORTANT**: This operation requires user confirmation. "
+                "Please describe what you're about to do and ask the user to confirm before proceeding. "
+                f"Reason: {explanation}"
+            )
+            message_to_send = message_to_send + confirmation_note
 
         if self.verbose:
             print(f"📊 Using intelligence: {explanation}")
@@ -1070,6 +1186,9 @@ Provide a clear instruction describing what you want to accomplish.""",
                     final_response = "⚠️ Task completed but response formatting failed. The operations were executed successfully."
         else:
             final_response = "⚠️ Task completed but response formatting failed. The operations were executed successfully."
+
+        # Smart Summarization: Condense verbose outputs for better UX
+        final_response = await self._smart_summarize(final_response)
 
         # Log assistant response
         self.session_logger.log_assistant_response(final_response)
