@@ -35,21 +35,10 @@ from core.observability import initialize_observability
 from core.resilience import RetryManager
 from core.user import UserPreferenceManager, AnalyticsCollector
 from core.parallel_executor import ParallelExecutor, AgentTask, TaskStatus
-
-from ui.terminal_ui import TerminalUI
+from core.circuit_breaker import CircuitBreaker, CircuitConfig, CircuitBreakerError
 
 logger = get_logger(__name__)
 load_dotenv()
-
-class C:
-    GREEN = '\033[92m'
-    CYAN = '\033[96m'
-    MAGENTA = '\033[95m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    BLUE = '\033[94m'
-    BOLD = '\033[1m'
-    ENDC = '\033[0m'
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
@@ -99,7 +88,7 @@ class OrchestratorAgent:
             self.llm = llm
 
         if self.verbose:
-            print(f"{C.CYAN}🧠 Using LLM: {self.llm}{C.ENDC}")
+            logger.info(f"Using LLM: {self.llm}")
 
         self.knowledge_base = WorkspaceKnowledge()
         self.session_id = str(uuid.uuid4())
@@ -126,8 +115,6 @@ class OrchestratorAgent:
         self.orch_logger = self.observability.orchestration_logger
         self.intel_logger = self.observability.intelligence_logger
 
-        self.ui = TerminalUI(verbose=self.verbose)
-
         # Modern hybrid intelligence system (Fast filter + LLM classifier)
         self.hybrid_intelligence = HybridIntelligenceSystem(
             llm=self.llm,
@@ -149,6 +136,17 @@ class OrchestratorAgent:
 
         # Parallel executor for multi-agent workflows
         self.parallel_executor = ParallelExecutor(verbose=self.verbose)
+
+        # Circuit breaker for agent health management
+        self.circuit_breaker = CircuitBreaker(
+            config=CircuitConfig(
+                failure_threshold=5,      # Open after 5 consecutive failures
+                success_threshold=2,      # Close after 2 consecutive successes
+                timeout_seconds=300.0,    # 5 minutes before recovery attempt
+                half_open_timeout=10.0
+            ),
+            verbose=self.verbose
+        )
 
         self.retry_manager = RetryManager(
             max_retries=self.max_retry_attempts,
@@ -181,17 +179,17 @@ class OrchestratorAgent:
             try:
                 self.user_prefs.load_from_file(str(self.prefs_file))
                 if self.verbose:
-                    print(f"{C.CYAN}📊 Loaded user preferences from {self.prefs_file}{C.ENDC}")
+                    logger.info(f"Loaded user preferences from {self.prefs_file}")
             except Exception as e:
                 logger.warning(f"Failed to load preferences: {e}")
 
         if self.verbose:
-            print(f"{C.CYAN}🧠 Intelligence enabled: Session {self.session_id[:8]}...{C.ENDC}")
-            print(f"{C.GREEN}🚀 Hybrid Intelligence: Fast Filter + LLM Classifier{C.ENDC}")
-            print(f"{C.CYAN}   • 92% accuracy with semantic understanding{C.ENDC}")
-            print(f"{C.CYAN}   • ~80ms avg latency with caching{C.ENDC}")
-            print(f"{C.CYAN}📝 Logging to: {self.session_logger.get_log_path()}{C.ENDC}")
-            print(f"{C.CYAN}🔄 Retry, 📊 Analytics, 🧠 Preferences - All enabled{C.ENDC}")
+            logger.info(f"Intelligence enabled: Session {self.session_id[:8]}...")
+            logger.info("Hybrid Intelligence: Fast Filter + LLM Classifier")
+            logger.info("  • 92% accuracy with semantic understanding")
+            logger.info("  • ~80ms avg latency with caching")
+            logger.info(f"Logging to: {self.session_logger.get_log_path()}")
+            logger.info("Retry, Analytics, Preferences - All enabled")
 
         self.system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
 
@@ -201,7 +199,7 @@ Your core purpose is to be a highly capable, reliable workspace assistant that u
 
 1. **User Intent Understanding**: Always seek to understand the true goal behind a user's request, not just the literal words. Ask clarifying questions when needed, but prefer taking initiative with reasonable assumptions when the intent is clear.
 
-2. **Intelligent Decomposition**: Break complex tasks into logical sub-tasks. Consider dependencies, required context flow, and optimal sequencing. Some tasks can be parallelized conceptually, but you must execute them sequentially.
+2. **Intelligent Decomposition**: Break complex tasks into logical sub-tasks. Execute tasks ONE AT A TIME in the optimal order. Focus on completing each step fully before moving to the next.
 
 3. **Contextual Awareness**: Maintain awareness of conversation history and context. When delegating to agents, provide them with relevant context from previous steps or earlier in the conversation.
 
@@ -224,10 +222,18 @@ When delegating to an agent:
 
 # Task Execution Patterns
 
-**Sequential Dependencies**: When task B requires output from task A:
-1. Execute task A first
-2. Extract relevant information from A's result
-3. Pass that information as context to task B
+**IMPORTANT: Execute ONE agent call at a time. Complete each task fully before moving to the next.**
+
+**Sequential Execution**: Always execute tasks one after another:
+1. Call the first agent with clear instructions
+2. Wait for the agent to complete and analyze the result
+3. If there's a next step, call the next agent
+4. Repeat until all tasks are done
+
+**Task Ordering**:
+- When tasks are independent, choose the most logical order
+- When Task B needs output from Task A, execute A first
+- For multi-step workflows, complete each step before proceeding
 
 **Information Gathering Then Action**: For tasks requiring specific details:
 1. First, gather all necessary information (search, list, query)
@@ -235,7 +241,7 @@ When delegating to an agent:
 3. Then execute the action with complete information
 
 **Multi-Platform Coordination**: When working across multiple platforms:
-1. Consider the logical flow across platforms
+1. Execute tasks in logical order (consider user priority and dependencies)
 2. Maintain consistency in naming, formatting, and references
 3. Provide a unified summary that connects actions across platforms
 
@@ -243,7 +249,7 @@ When delegating to an agent:
 
 - **Accuracy**: Double-check critical details like IDs, names, and specific values before executing actions
 - **Completeness**: Ensure tasks are fully completed, not just partially done
-- **Efficiency**: Minimize unnecessary agent calls while ensuring thoroughness
+- **Efficiency**: Execute tasks in the most logical order. Minimize unnecessary agent calls while ensuring thoroughness. Focus on completing one task at a time for maximum reliability.
 - **Transparency**: Keep users informed of progress, especially for multi-step operations
 - **Error Recovery**: When errors occur, explain what went wrong clearly and suggest solutions
 
@@ -338,17 +344,10 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         }
 
     async def _spinner(self, task: asyncio.Task, message: str):
+        """Simple wrapper for tasks - just awaits the task"""
         if self.verbose:
-            await task
-            return
-
-        progress = self.ui.start_progress(message)
-
-        try:
-            await task
-        finally:
-            if progress is not None:
-                progress.stop()
+            logger.info(message)
+        await task
 
     async def _load_single_agent(self, connector_file: Path) -> Optional[tuple]:
         agent_name = connector_file.stem.replace("_agent", "")
@@ -358,7 +357,7 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             return None
 
         if self.verbose:
-            messages.append(f"{C.CYAN}📦 Loading: {C.BOLD}{agent_name}{C.ENDC}{C.CYAN} agent...{C.ENDC}")
+            messages.append(f"Loading: {agent_name} agent...")
 
         try:
             spec = importlib.util.spec_from_file_location(
@@ -369,7 +368,7 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             spec.loader.exec_module(module)
 
             if not hasattr(module, 'Agent'):
-                messages.append(f"{C.RED}  ✗ No 'Agent' class found in {connector_file}{C.ENDC}")
+                messages.append(f"  ✗ No 'Agent' class found in {connector_file}")
                 return None
 
             agent_class = module.Agent
@@ -404,18 +403,18 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 capabilities = await agent_instance.get_capabilities()
 
                 if self.verbose:
-                    messages.append(f"{C.GREEN}  ✓ Loaded {agent_name} with {len(capabilities)} capabilities{C.ENDC}")
+                    messages.append(f"  ✓ Loaded {agent_name} with {len(capabilities)} capabilities")
                     for cap in capabilities[:3]:
-                        messages.append(f"{C.GREEN}    - {cap}{C.ENDC}")
+                        messages.append(f"    - {cap}")
                     if len(capabilities) > 3:
-                        messages.append(f"{C.GREEN}    ... and {len(capabilities) - 3} more{C.ENDC}")
+                        messages.append(f"    ... and {len(capabilities) - 3} more")
 
                 return (agent_name, agent_instance, capabilities, messages)
 
             except Exception as init_error:
-                messages.append(f"{C.RED}  ✗ Failed to initialize {agent_name}: {init_error}{C.ENDC}")
+                messages.append(f"  ✗ Failed to initialize {agent_name}: {init_error}")
                 if self.verbose:
-                    messages.append(f"{C.RED}    {traceback.format_exc()}{C.ENDC}")
+                    messages.append(f"    {traceback.format_exc()}")
                 try:
                     if hasattr(agent_instance, 'cleanup'):
                         await agent_instance.cleanup()
@@ -424,31 +423,32 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 return (agent_name, None, None, messages)
 
         except Exception as e:
-            messages.append(f"{C.RED}  ✗ Failed to load {agent_name}: {e}{C.ENDC}")
+            messages.append(f"  ✗ Failed to load {agent_name}: {e}")
             if self.verbose:
-                messages.append(f"{C.RED}    {traceback.format_exc()}{C.ENDC}")
+                messages.append(f"    {traceback.format_exc()}")
             return (agent_name, None, None, messages)
 
     async def discover_and_load_agents(self):
         if self.verbose:
-            print(f"\n{C.YELLOW}{'='*60}{C.ENDC}")
-            print(f"{C.BOLD}{C.CYAN}🔍 Discovering Agent Connectors...{C.ENDC}")
-            print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
+            logger.info("="*60)
+            logger.info("Discovering Agent Connectors...")
+            logger.info("="*60)
 
         if not self.connectors_dir.exists():
-            print(f"{C.RED}✗ Connectors directory '{self.connectors_dir}' not found!{C.ENDC}")
-            print(f"{C.YELLOW}Creating directory...{C.ENDC}")
+            logger.warning(f"Connectors directory '{self.connectors_dir}' not found!")
+            logger.info("Creating directory...")
             self.connectors_dir.mkdir(parents=True, exist_ok=True)
             return
 
         connector_files = list(self.connectors_dir.glob("*_agent.py"))
 
         if not connector_files:
-            print(f"{C.YELLOW}⚠ No agent connectors found in '{self.connectors_dir}'{C.ENDC}")
-            print(f"{C.YELLOW}  Expected files matching pattern: *_agent.py{C.ENDC}")
+            logger.warning(f"No agent connectors found in '{self.connectors_dir}'")
+            logger.info("Expected files matching pattern: *_agent.py")
             return
 
-        print(f"{C.CYAN}Loading {len(connector_files)} agent(s) in parallel...{C.ENDC}\n")
+        if self.verbose:
+            logger.info(f"Loading {len(connector_files)} agent(s) in parallel...")
 
         load_tasks = [self._load_single_agent(f) for f in connector_files]
         results = await asyncio.gather(*load_tasks, return_exceptions=True)
@@ -462,20 +462,21 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
             if isinstance(result, BaseException):
                 failed += 1
-                print(f"{C.RED}✗ Exception during loading: {result}{C.ENDC}")
+                logger.error(f"Exception during loading: {result}")
                 if self.verbose:
-                    print(f"{C.RED}    Type: {type(result).__name__}{C.ENDC}")
+                    logger.error(f"  Type: {type(result).__name__}")
                 continue
 
             if not isinstance(result, tuple) or len(result) != 4:
                 failed += 1
-                print(f"{C.RED}✗ Invalid result from agent loading: {result}{C.ENDC}")
+                logger.error(f"Invalid result from agent loading: {result}")
                 continue
 
             agent_name, agent_instance, capabilities, messages = result
 
             for msg in messages:
-                print(msg)
+                if self.verbose:
+                    logger.info(msg)
 
             if agent_instance is not None and capabilities is not None:
                 self.sub_agents[agent_name] = agent_instance
@@ -504,12 +505,12 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 }
                 failed += 1
 
-        print(f"\n{C.GREEN}✓ Loaded {successful} agent(s) successfully.{C.ENDC}")
+        logger.info(f"Loaded {successful} agent(s) successfully.")
         if failed > 0:
-            print(f"{C.YELLOW}⚠ {failed} agent(s) failed to load but system will continue.{C.ENDC}")
+            logger.warning(f"{failed} agent(s) failed to load but system will continue.")
 
         if self.verbose:
-            print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
+            logger.info("="*60)
 
     def _create_agent_tools(self) -> List[protos.FunctionDeclaration]:
         tools = []
@@ -550,7 +551,7 @@ Provide a clear instruction describing what you want to accomplish.""",
             health = self.agent_health[agent_name]
             if health['status'] == 'unavailable':
                 error_msg = f"⚠️ {agent_name} agent is currently unavailable: {health.get('error_message', 'Unknown error')}"
-                print(f"{C.YELLOW}{error_msg}{C.ENDC}")
+                logger.warning(error_msg)
                 return error_msg
 
         operation_key = f"{agent_name}_{hashlib.md5(instruction[:100].encode()).hexdigest()[:8]}"
@@ -582,7 +583,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         def progress_callback(message: str, attempt: int, max_attempts: int):
             if attempt > 1:
-                print(f"{C.YELLOW}🔄 {message}{C.ENDC}")
+                logger.info(f"🔄 {message}")
 
         try:
             result = await self.retry_manager.execute_with_retry(
@@ -596,17 +597,17 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         except Exception as e:
             error_msg = f"Error executing {agent_name} agent: {str(e)}"
-            print(f"{C.RED}✗ {error_msg}{C.ENDC}")
+            logger.error(error_msg)
             if self.verbose:
                 traceback.print_exc()
             return error_msg
 
     async def _execute_agent_direct(self, agent_name: str, instruction: str, context: Any = None) -> str:
         if self.verbose:
-            print(f"\n{C.MAGENTA}{'─'*60}{C.ENDC}")
-            print(f"{C.MAGENTA}🤖 Delegating to {C.BOLD}{agent_name}{C.ENDC}{C.MAGENTA} agent{C.ENDC}")
-            print(f"{C.MAGENTA}{'─'*60}{C.ENDC}")
-            print(f"{C.CYAN}Instruction: {instruction}{C.ENDC}")
+            logger.info("─"*60)
+            logger.info(f"🤖 Delegating to {agent_name} agent")
+            logger.info("─"*60)
+            logger.info(f"Instruction: {instruction}")
 
         context_str = ""
         if context:
@@ -616,7 +617,7 @@ Provide a clear instruction describing what you want to accomplish.""",
                 context_str = str(context)
 
             if self.verbose:
-                print(f"{C.CYAN}Context: {context_str[:200]}...{C.ENDC}")
+                logger.info(f"Context: {context_str[:200]}...")
 
         import time
         start_time = time.time()
@@ -659,8 +660,8 @@ Provide a clear instruction describing what you want to accomplish.""",
 
             if self.verbose:
                 status = "✓" if success else "✗"
-                print(f"{C.GREEN if success else C.RED}{status} {agent_name} completed ({latency_ms:.0f}ms){C.ENDC}")
-                print(f"{C.MAGENTA}{'─'*60}{C.ENDC}\n")
+                logger.info(f"{status} {agent_name} completed ({latency_ms:.0f}ms)")
+                logger.info("─"*60)
 
             if not success:
                 enhanced = self.error_enhancer.enhance_error(
@@ -672,7 +673,7 @@ Provide a clear instruction describing what you want to accomplish.""",
                 enhanced_msg = enhanced.format()
 
                 if self.verbose:
-                    print(f"{C.YELLOW}{enhanced_msg}{C.ENDC}")
+                    logger.warning(enhanced_msg)
 
                 raise RuntimeError(enhanced_msg)
 
@@ -703,7 +704,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
                 if self.agent_health[agent_name]['error_count'] >= 3:
                     self.agent_health[agent_name]['status'] = 'degraded'
-                    print(f"{C.YELLOW}⚠️ {agent_name} agent marked as degraded after 3 failures{C.ENDC}")
+                    logger.warning(f"⚠️ {agent_name} agent marked as degraded after 3 failures")
 
             raise RuntimeError(enhanced_msg)
 
@@ -741,9 +742,9 @@ Provide a clear instruction describing what you want to accomplish.""",
             )
 
         if self.verbose:
-            print(f"{C.GREEN}[HYBRID] Path: {hybrid_result.path_used}, "
+            logger.info(f"[HYBRID] Path: {hybrid_result.path_used}, "
                   f"Latency: {hybrid_result.latency_ms:.1f}ms, "
-                  f"Confidence: {hybrid_result.confidence:.2f}{C.ENDC}")
+                  f"Confidence: {hybrid_result.confidence:.2f}")
 
         if hasattr(self, 'intel_logger') and entities:
             entity_dict = {}
@@ -812,11 +813,11 @@ Provide a clear instruction describing what you want to accomplish.""",
         }
 
         if self.verbose:
-            print(f"\n{C.CYAN}🧠 Intelligence Analysis:{C.ENDC}")
-            print(f"  Intents: {[str(i) for i in intents[:3]]}")
-            print(f"  Entities: {len(entities)} found")
-            print(f"  Confidence: {confidence}")
-            print(f"  Recommendation: {intelligence['action_recommendation'][0]}")
+            logger.info("🧠 Intelligence Analysis:")
+            logger.info(f"  Intents: {[str(i) for i in intents[:3]]}")
+            logger.info(f"  Entities: {len(entities)} found")
+            logger.info(f"  Confidence: {confidence}")
+            logger.info(f"  Recommendation: {intelligence['action_recommendation'][0]}")
 
         return intelligence
 
@@ -859,11 +860,10 @@ Provide a clear instruction describing what you want to accomplish.""",
                 intelligence['intents']
             )
             if clarifications:
-                self.ui.print_response("\n".join(clarifications[:2]))
                 return "I need more information to proceed. " + clarifications[0]
 
         if self.verbose:
-            print(f"{C.CYAN}📊 Using intelligence: {explanation}{C.ENDC}")
+            logger.info(f"📊 Using intelligence: {explanation}")
 
         send_task = asyncio.create_task(self.chat.send_message(message_to_send))
         await self._spinner(send_task, "Thinking")
@@ -875,192 +875,258 @@ Provide a clear instruction describing what you want to accomplish.""",
         iteration = 0
 
         while iteration < max_iterations:
-            if not response or not hasattr(response, 'candidates') or not response.candidates:
+            # Extract function calls from response - ALWAYS process ONE AT A TIME for reliability
+            function_calls = self._extract_all_function_calls(response)
+
+            if not function_calls:
                 break
 
-            parts = response.candidates[0].content.parts
-            has_function_call = any(
-                hasattr(part, 'function_call') and part.function_call
-                for part in parts
-            )
+            # ALWAYS take only the FIRST function call (sequential execution only)
+            # This ensures reliability and prevents parallel execution issues
+            if len(function_calls) > 1 and False:  # Parallel execution DISABLED
+                if self.verbose:
+                    logger.info(f"🔄 Found {len(function_calls)} agent calls - executing in parallel")
 
-            if not has_function_call:
-                break
+                # Create AgentTask objects
+                tasks = []
+                for i, fc in enumerate(function_calls):
+                    tool_name = fc['tool_name']
+                    agent_name = fc['agent_name']
+                    args = fc['args']
+                    instruction = args.get("instruction", "")
+                    context = args.get("context", "")
 
-            function_call = None
-            for part in parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    function_call = part.function_call
-                    break
+                    task = AgentTask(
+                        task_id=f"task_{iteration}_{i}",
+                        agent_name=agent_name,
+                        tool_name=tool_name,
+                        instruction=instruction,
+                        context=context,
+                        args=args
+                    )
+                    tasks.append(task)
 
-            if not function_call:
-                break
+                # Execute tasks in parallel
+                try:
+                    results = await self.parallel_executor.execute_tasks(
+                        tasks,
+                        self._execute_agent_task
+                    )
 
-            tool_name = function_call.name
+                    # Send ALL results back to LLM at once
+                    function_results = []
+                    for task in tasks:
+                        result = results.get(task.task_id, f"Error: No result for {task.agent_name}")
+                        function_results.append({
+                            'name': task.tool_name,
+                            'result': result
+                        })
 
-            if tool_name.startswith("use_") and tool_name.endswith("_agent"):
-                agent_name = tool_name[4:-6]
-            else:
-                agent_name = tool_name
+                    # Send all results to LLM
+                    response_task = asyncio.create_task(
+                        self.chat.send_message_with_functions("", *function_results)
+                    )
+                    await self._spinner(response_task, "Synthesizing parallel results")
+                    llm_response = response_task.result()
 
-            args = self._deep_convert_proto_args(function_call.args)
+                    response = llm_response.metadata.get('response_object') if llm_response.metadata else None
 
-            instruction = args.get("instruction", "")
-            context = args.get("context", "")
+                except Exception as e:
+                    if self.verbose:
+                        logger.error(f"✗ Parallel execution failed: {e}")
+                    # Fall back to sequential on error
+                    function_calls = function_calls[:1]  # Take first only
 
-            is_valid, validation_error = InputValidator.validate_instruction(instruction)
-            if not is_valid:
-                logger.error(f"Invalid instruction rejected: {validation_error}")
-                function_call_result = {
-                    'agent': agent_name,
-                    'status': 'error',
-                    'error': validation_error
+            # Single function call or fallback: execute sequentially (backward compatibility)
+            if len(function_calls) == 1:
+                fc = function_calls[0]
+                tool_name = fc['tool_name']
+                agent_name = fc['agent_name']
+                args = fc['args']
+                instruction = args.get("instruction", "")
+                context = args.get("context", "")
+
+                is_valid, validation_error = InputValidator.validate_instruction(instruction)
+                if not is_valid:
+                    logger.error(f"Invalid instruction rejected: {validation_error}")
+                    function_call_result = {
+                        'agent': agent_name,
+                        'status': 'error',
+                        'error': validation_error
+                    }
+                    continue
+
+                # Check circuit breaker before execution
+                allowed, reason = await self.circuit_breaker.can_execute(agent_name)
+                if not allowed:
+                    error_msg = f"🔴 Circuit breaker blocked request to {agent_name}: {reason}"
+                    if self.verbose:
+                        logger.error(error_msg)
+                    result = error_msg
+                    # Send error to LLM and continue
+                    function_result = {
+                        'name': tool_name,
+                        'result': result
+                    }
+                    response_task = asyncio.create_task(
+                        self.chat.send_message_with_functions("", function_result)
+                    )
+                    await self._spinner(response_task, "Synthesizing results")
+                    llm_response = response_task.result()
+                    response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+                    iteration += 1
+                    continue
+
+                operation_key = self._get_operation_key(agent_name, instruction)
+                retry_context = self._get_retry_context(operation_key)
+
+                self._track_retry_attempt(operation_key, agent_name, instruction)
+
+                known_solutions = []
+                if retry_context and retry_context['previous_errors']:
+                    last_error_msg = retry_context['previous_errors'][-1]['message']
+                    known_solutions = self._query_error_solutions(agent_name, last_error_msg)
+
+                    if self.verbose and known_solutions:
+                        logger.info(f"💡 Found {len(known_solutions)} known solution(s) for this error")
+
+                agent_task = asyncio.create_task(
+                    self.call_sub_agent(agent_name, instruction, context)
+                )
+
+                self.operation_count += 1
+                spinner_msg = f"Running {agent_name} agent"
+
+                try:
+                    await asyncio.wait_for(
+                        self._spinner(agent_task, spinner_msg),
+                        timeout=120.0
+                    )
+                    result = agent_task.result()
+
+                    if self.verbose:
+                        logger.info(f"✓ {agent_name} completed")
+
+                    self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
+                    await self.circuit_breaker.record_success(agent_name)
+
+                    if retry_context:
+                        self._mark_retry_success(operation_key, solution_used="retry with same parameters")
+
+                except asyncio.TimeoutError:
+                    error_msg = f"Agent timed out after 120 seconds. Operation may have completed but response was not received."
+
+                    error_classification = ErrorClassifier.classify(error_msg, agent_name)
+                    self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
+
+                    # Record failure in circuit breaker
+                    await self.circuit_breaker.record_failure(agent_name)
+
+                    retry_ctx = self._get_retry_context(operation_key)
+                    attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
+
+                    result = format_error_for_user(
+                        error_classification,
+                        agent_name,
+                        instruction,
+                        attempt_num,
+                        self.max_retry_attempts
+                    )
+
+                    if retry_ctx and attempt_num >= self.max_retry_attempts:
+                        result += f"\n\n**Note**: This error appears to be transient (temporary network issue). If it persists:\n"
+                        result += f"  • Check your internet connection\n"
+                        result += f"  • Try again in a few moments\n"
+                        result += f"  • Break the operation into smaller steps"
+
+                    logger.warning(f"⚠ {agent_name} agent operation timed out")
+
+                except Exception as e:
+                    error_str = str(e)
+
+                    self.duplicate_detector.track_operation(agent_name, instruction, error_str, success=False)
+
+                    # Record failure in circuit breaker
+                    await self.circuit_breaker.record_failure(agent_name)
+
+                    error_classification = ErrorClassifier.classify(error_str, agent_name)
+
+                    self._track_retry_attempt(operation_key, agent_name, instruction, error=error_str)
+
+                    retry_ctx = self._get_retry_context(operation_key)
+                    attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
+
+                    is_duplicate, dup_explanation = self.duplicate_detector.detect_duplicate_failure(
+                        agent_name, instruction, error_str
+                    )
+
+                    is_inconsistent, dup_pattern = self.duplicate_detector.detect_inconsistent_responses(
+                        agent_name, instruction
+                    )
+
+                    result = format_error_for_user(
+                        error_classification,
+                        agent_name,
+                        instruction,
+                        attempt_num,
+                        self.max_retry_attempts
+                    )
+
+                    if is_duplicate and dup_explanation:
+                        result += f"\n\n⚠️ **DUPLICATE OPERATION DETECTED**\n{dup_explanation}"
+                        result += f"\n\nThis operation appears stuck. It will NOT be retried further."
+                        error_classification.is_retryable = False
+
+                    if is_inconsistent and dup_pattern:
+                        result += f"\n\n⚠️ **INCONSISTENT RESPONSES DETECTED**\n"
+                        result += f"Response pattern: {' → '.join(dup_pattern[-5:])}\n"
+                        result += f"The agent is giving conflicting results. Please verify manually."
+
+                    if not error_classification.is_retryable and attempt_num == 1:
+                        result += f"\n\n⚠️ **This operation will not be retried** because it's a {error_classification.category.value} error."
+
+                    if error_classification.is_retryable and retry_ctx:
+                        if attempt_num >= self.max_retry_attempts:
+                            result += f"\n\n**Note**: Maximum retry attempts ({self.max_retry_attempts}) reached. This appears to be a persistent issue."
+                        else:
+                            result += f"\n\n**Next step**: The system will automatically retry this operation."
+
+                    if self.verbose:
+                        logger.info(f"[ERROR CLASSIFICATION] Category: {error_classification.category.value}, Retryable: {error_classification.is_retryable}")
+                        if is_duplicate:
+                            logger.warning(f"[DUPLICATE DETECTED] {dup_explanation}")
+                        if is_inconsistent:
+                            logger.warning(f"[INCONSISTENT RESPONSES] Pattern: {dup_pattern}")
+
+                    logger.error(f"✗ {agent_name} agent failed: {e}")
+
+                function_result = {
+                    'name': tool_name,
+                    'result': result
                 }
-                continue
 
-            operation_key = self._get_operation_key(agent_name, instruction)
-            retry_context = self._get_retry_context(operation_key)
-
-            self._track_retry_attempt(operation_key, agent_name, instruction)
-
-            known_solutions = []
-            if retry_context and retry_context['previous_errors']:
-                last_error_msg = retry_context['previous_errors'][-1]['message']
-                known_solutions = self._query_error_solutions(agent_name, last_error_msg)
-
-                if self.verbose and known_solutions:
-                    print(f"{C.CYAN}💡 Found {len(known_solutions)} known solution(s) for this error{C.ENDC}")
-
-            agent_task = asyncio.create_task(
-                self.call_sub_agent(agent_name, instruction, context)
-            )
-
-            self.operation_count += 1
-            spinner_msg = f"Running {agent_name} agent"
-
-            try:
-                await asyncio.wait_for(
-                    self._spinner(agent_task, spinner_msg),
-                    timeout=120.0
+                response_task = asyncio.create_task(
+                    self.chat.send_message_with_functions("", function_result)
                 )
-                result = agent_task.result()
+                await self._spinner(response_task, "Synthesizing results")
+                llm_response = response_task.result()
 
-                if self.verbose:
-                    print(f"{C.GREEN}✓ {agent_name} completed{C.ENDC}")
-
-                self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
-
-                if retry_context:
-                    self._mark_retry_success(operation_key, solution_used="retry with same parameters")
-
-            except asyncio.TimeoutError:
-                error_msg = f"Agent timed out after 120 seconds. Operation may have completed but response was not received."
-
-                error_classification = ErrorClassifier.classify(error_msg, agent_name)
-                self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
-
-                retry_ctx = self._get_retry_context(operation_key)
-                attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
-
-                result = format_error_for_user(
-                    error_classification,
-                    agent_name,
-                    instruction,
-                    attempt_num,
-                    self.max_retry_attempts
-                )
-
-                if retry_ctx and attempt_num >= self.max_retry_attempts:
-                    result += f"\n\n**Note**: This error appears to be transient (temporary network issue). If it persists:\n"
-                    result += f"  • Check your internet connection\n"
-                    result += f"  • Try again in a few moments\n"
-                    result += f"  • Break the operation into smaller steps"
-
-                print(f"{C.YELLOW}⚠ {agent_name} agent operation timed out{C.ENDC}")
-
-            except Exception as e:
-                error_str = str(e)
-
-                self.duplicate_detector.track_operation(agent_name, instruction, error_str, success=False)
-
-                error_classification = ErrorClassifier.classify(error_str, agent_name)
-
-                self._track_retry_attempt(operation_key, agent_name, instruction, error=error_str)
-
-                retry_ctx = self._get_retry_context(operation_key)
-                attempt_num = retry_ctx['attempt_number'] if retry_ctx else 1
-
-                is_duplicate, dup_explanation = self.duplicate_detector.detect_duplicate_failure(
-                    agent_name, instruction, error_str
-                )
-
-                is_inconsistent, dup_pattern = self.duplicate_detector.detect_inconsistent_responses(
-                    agent_name, instruction
-                )
-
-                result = format_error_for_user(
-                    error_classification,
-                    agent_name,
-                    instruction,
-                    attempt_num,
-                    self.max_retry_attempts
-                )
-
-                if is_duplicate and dup_explanation:
-                    result += f"\n\n⚠️ **DUPLICATE OPERATION DETECTED**\n{dup_explanation}"
-                    result += f"\n\nThis operation appears stuck. It will NOT be retried further."
-                    error_classification.is_retryable = False
-
-                if is_inconsistent and dup_pattern:
-                    result += f"\n\n⚠️ **INCONSISTENT RESPONSES DETECTED**\n"
-                    result += f"Response pattern: {' → '.join(dup_pattern[-5:])}\n"
-                    result += f"The agent is giving conflicting results. Please verify manually."
-
-                if not error_classification.is_retryable and attempt_num == 1:
-                    result += f"\n\n⚠️ **This operation will not be retried** because it's a {error_classification.category.value} error."
-
-                if error_classification.is_retryable and retry_ctx:
-                    if attempt_num >= self.max_retry_attempts:
-                        result += f"\n\n**Note**: Maximum retry attempts ({self.max_retry_attempts}) reached. This appears to be a persistent issue."
-                    else:
-                        result += f"\n\n**Next step**: The system will automatically retry this operation."
-
-                if self.verbose:
-                    print(f"{C.CYAN}[ERROR CLASSIFICATION] Category: {error_classification.category.value}, Retryable: {error_classification.is_retryable}{C.ENDC}")
-                    if is_duplicate:
-                        print(f"{C.YELLOW}[DUPLICATE DETECTED] {dup_explanation}{C.ENDC}")
-                    if is_inconsistent:
-                        print(f"{C.YELLOW}[INCONSISTENT RESPONSES] Pattern: {dup_pattern}{C.ENDC}")
-
-                print(f"{C.RED}✗ {agent_name} agent failed: {e}{C.ENDC}")
-
-            function_result = {
-                'name': tool_name,
-                'result': result
-            }
-
-            response_task = asyncio.create_task(
-                self.chat.send_message_with_functions("", function_result)
-            )
-            await self._spinner(response_task, "Synthesizing results")
-            llm_response = response_task.result()
-
-            response = llm_response.metadata.get('response_object') if llm_response.metadata else None
+                response = llm_response.metadata.get('response_object') if llm_response.metadata else None
 
             iteration += 1
 
         if iteration >= max_iterations:
-            print(f"{C.YELLOW}⚠ Warning: Reached maximum orchestration iterations{C.ENDC}")
-            print(f"{C.YELLOW}💡 Tip: Break complex tasks into smaller steps{C.ENDC}")
+            logger.warning("⚠ Warning: Reached maximum orchestration iterations")
+            logger.info("💡 Tip: Break complex tasks into smaller steps")
 
         if self.operation_count > 0 and self.verbose:
-            print(f"\n{C.GREEN}✅ Completed {self.operation_count} operation(s){C.ENDC}\n")
+            logger.info(f"✅ Completed {self.operation_count} operation(s)")
 
         try:
             self.conversation_history = self.chat.get_history()
         except Exception as e:
             if self.verbose:
-                print(f"{C.YELLOW}⚠ Could not update conversation history: {e}{C.ENDC}")
+                logger.warning(f"⚠ Could not update conversation history: {e}")
 
         if llm_response and llm_response.text:
             return llm_response.text
@@ -1084,7 +1150,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         if not error_classification.is_retryable:
             if self.verbose:
-                print(f"{C.CYAN}[RETRY DECISION] Non-retryable error ({error_classification.category.value}) - will NOT retry{C.ENDC}")
+                logger.info(f"[RETRY DECISION] Non-retryable error ({error_classification.category.value}) - will NOT retry")
             return False
 
         retry_context = self._get_retry_context(operation_key)
@@ -1092,12 +1158,12 @@ Provide a clear instruction describing what you want to accomplish.""",
             attempt_num = retry_context['attempt_number']
             if attempt_num >= self.max_retry_attempts:
                 if self.verbose:
-                    print(f"{C.CYAN}[RETRY DECISION] Max attempts ({self.max_retry_attempts}) reached - will NOT retry{C.ENDC}")
+                    logger.info(f"[RETRY DECISION] Max attempts ({self.max_retry_attempts}) reached - will NOT retry")
                 return False
 
         if self.verbose:
             category = error_classification.category.value
-            print(f"{C.CYAN}[RETRY DECISION] Retryable error ({category}) - will retry{C.ENDC}")
+            logger.info(f"[RETRY DECISION] Retryable error ({category}) - will retry")
 
         return True
 
@@ -1109,6 +1175,126 @@ Provide a clear instruction describing what you want to accomplish.""",
             return [self._deep_convert_proto_args(item) for item in value]
         else:
             return value
+
+    def _extract_all_function_calls(self, response) -> List[Dict[str, Any]]:
+        """
+        Extract ALL function calls from LLM response (not just the first).
+        Returns list of dicts with: {tool_name, agent_name, args}
+        """
+        if not response or not hasattr(response, 'candidates') or not response.candidates:
+            return []
+
+        function_calls = []
+        parts = response.candidates[0].content.parts
+
+        for part in parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                function_call = part.function_call
+                tool_name = function_call.name
+
+                # Extract agent name from tool name
+                if tool_name.startswith("use_") and tool_name.endswith("_agent"):
+                    agent_name = tool_name[4:-6]
+                else:
+                    agent_name = tool_name
+
+                args = self._deep_convert_proto_args(function_call.args)
+
+                function_calls.append({
+                    'tool_name': tool_name,
+                    'agent_name': agent_name,
+                    'args': args,
+                    'function_call': function_call  # Keep original for result sending
+                })
+
+        return function_calls
+
+    async def _execute_agent_task(self, task: AgentTask) -> str:
+        """
+        Execute a single agent task. Used by ParallelExecutor.
+        Includes circuit breaker, error handling, retry logic, and validation.
+        """
+        instruction = task.instruction
+        agent_name = task.agent_name
+        context = task.context
+
+        # Validate instruction
+        is_valid, validation_error = InputValidator.validate_instruction(instruction)
+        if not is_valid:
+            logger.error(f"Invalid instruction rejected: {validation_error}")
+            raise ValueError(validation_error)
+
+        # Check circuit breaker
+        allowed, reason = await self.circuit_breaker.can_execute(agent_name)
+        if not allowed:
+            error_msg = f"🔴 Circuit breaker blocked request to {agent_name}: {reason}"
+            if self.verbose:
+                logger.error(error_msg)
+            raise CircuitBreakerError(agent_name, error_msg)
+
+        # Track retry attempt
+        operation_key = self._get_operation_key(agent_name, instruction)
+        self._track_retry_attempt(operation_key, agent_name, instruction)
+
+        # Execute agent with circuit breaker protection
+        try:
+            result = await asyncio.wait_for(
+                self.call_sub_agent(agent_name, instruction, context),
+                timeout=120.0
+            )
+
+            if self.verbose:
+                logger.info(f"✓ {agent_name} completed")
+
+            # Track success
+            self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
+            await self.circuit_breaker.record_success(agent_name)
+            self.operation_count += 1
+
+            return result
+
+        except asyncio.TimeoutError:
+            error_msg = f"Agent timed out after 120 seconds. Operation may have completed but response was not received."
+            error_classification = ErrorClassifier.classify(error_msg, agent_name)
+            self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
+
+            # Record failure in circuit breaker
+            await self.circuit_breaker.record_failure(agent_name)
+
+            result = format_error_for_user(
+                error_classification,
+                agent_name,
+                instruction,
+                1,  # attempt_num
+                self.max_retry_attempts
+            )
+
+            if self.verbose:
+                logger.warning(f"⚠ {agent_name} agent operation timed out")
+
+            raise RuntimeError(result)
+
+        except Exception as e:
+            error_str = str(e)
+            self.duplicate_detector.track_operation(agent_name, instruction, error_str, success=False)
+            error_classification = ErrorClassifier.classify(error_str, agent_name)
+            self._track_retry_attempt(operation_key, agent_name, instruction, error=error_str)
+
+            # Record failure in circuit breaker
+            await self.circuit_breaker.record_failure(agent_name)
+
+            result = format_error_for_user(
+                error_classification,
+                agent_name,
+                instruction,
+                1,
+                self.max_retry_attempts
+            )
+
+            if self.verbose:
+                logger.error(f"✗ {agent_name} agent failed: {e}")
+
+            raise RuntimeError(result)
 
     def _get_operation_key(self, agent_name: str, instruction: str) -> str:
         key_string = f"{agent_name}:{instruction[:100]}"
@@ -1170,20 +1356,20 @@ Provide a clear instruction describing what you want to accomplish.""",
                 last_error = tracker['errors'][-1]['message']
 
                 if self.verbose:
-                    print(f"{C.GREEN}✓ Learned: {solution_used} fixed the issue{C.ENDC}")
+                    logger.info(f"✓ Learned: {solution_used} fixed the issue")
 
     async def cleanup(self):
         if self.verbose:
-            print(f"\n{C.YELLOW}Shutting down agents...{C.ENDC}")
+            logger.info("Shutting down agents...")
 
         for agent_name, agent in list(self.sub_agents.items()):
             try:
                 if hasattr(agent, 'cleanup'):
                     await agent.cleanup()
                 if self.verbose:
-                    print(f"{C.GREEN}  ✓ {agent_name} shut down{C.ENDC}")
+                    logger.info(f"  ✓ {agent_name} shut down")
             except Exception as e:
-                print(f"{C.RED}  ✗ Error shutting down {agent_name}: {e}{C.ENDC}")
+                logger.error(f"  ✗ Error shutting down {agent_name}: {e}")
 
         if hasattr(self, 'analytics'):
             try:
@@ -1195,8 +1381,8 @@ Provide a clear instruction describing what you want to accomplish.""",
                 self.analytics.save_to_file(str(analytics_file))
 
                 if self.verbose:
-                    print(f"{C.GREEN}  ✓ Analytics saved: {analytics_file}{C.ENDC}")
-                    print(f"{C.CYAN}    {self.analytics.generate_summary_report()}{C.ENDC}")
+                    logger.info(f"  ✓ Analytics saved: {analytics_file}")
+                    logger.info(f"    {self.analytics.generate_summary_report()}")
             except Exception as e:
                 logger.warning(f"Failed to save analytics: {e}")
 
@@ -1204,107 +1390,32 @@ Provide a clear instruction describing what you want to accomplish.""",
             try:
                 self.user_prefs.save_to_file(str(self.prefs_file))
                 if self.verbose:
-                    print(f"{C.GREEN}  ✓ Preferences saved: {self.prefs_file}{C.ENDC}")
+                    logger.info(f"  ✓ Preferences saved: {self.prefs_file}")
             except Exception as e:
                 logger.warning(f"Failed to save preferences: {e}")
 
         if hasattr(self, 'retry_manager') and self.verbose:
             stats = self.retry_manager.get_statistics()
             if stats['total_operations'] > 0:
-                print(f"{C.CYAN}  📊 Retry stats: {stats['total_operations']} ops, "
-                      f"{stats['avg_retries_per_operation']:.1f} avg retries{C.ENDC}")
+                logger.info(f"  📊 Retry stats: {stats['total_operations']} ops, "
+                      f"{stats['avg_retries_per_operation']:.1f} avg retries")
 
         # Print hybrid intelligence statistics
         if hasattr(self, 'hybrid_intelligence') and self.verbose:
-            print(f"\n{C.CYAN}  🚀 Hybrid Intelligence Statistics:{C.ENDC}")
-            print(f"{C.CYAN}  {self.hybrid_intelligence.get_performance_summary()}{C.ENDC}")
+            logger.info("  🚀 Hybrid Intelligence Statistics:")
+            logger.info(f"  {self.hybrid_intelligence.get_performance_summary()}")
 
         if hasattr(self, 'observability'):
             try:
                 self.observability.export_all()
                 self.observability.cleanup()
                 if self.verbose:
-                    print(f"{C.GREEN}  ✓ Observability data exported{C.ENDC}")
+                    logger.info("  ✓ Observability data exported")
             except Exception as e:
                 logger.warning(f"Failed to export observability data: {e}")
 
         if hasattr(self, 'session_logger'):
             self.session_logger.close()
             if self.verbose:
-                print(f"{C.GREEN}  ✓ Session log saved: {self.session_logger.get_log_path()}{C.ENDC}")
+                logger.info(f"  ✓ Session log saved: {self.session_logger.get_log_path()}")
 
-    async def run_interactive(self):
-        if not self.verbose:
-            self.ui.print_header(self.session_id)
-        else:
-            print(f"\n{C.YELLOW}{'='*60}{C.ENDC}")
-            print(f"{C.BOLD}{C.CYAN}🎭 Multi-Agent Orchestration System{C.ENDC}")
-            print(f"{C.YELLOW}Mode: Verbose{C.ENDC}")
-            print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
-
-        try:
-            while True:
-                if not self.verbose:
-                    self.ui.print_prompt()
-                    user_input = input().strip()
-                else:
-                    user_input = input(f"{C.BOLD}{C.BLUE}You: {C.ENDC}").strip()
-
-                if user_input.lower() in ['exit', 'quit', 'bye']:
-                    if not self.verbose:
-                        self.ui.print_goodbye()
-                    else:
-                        print(f"\n{C.GREEN}Goodbye! 👋{C.ENDC}")
-                    break
-
-                if not user_input:
-                    continue
-
-                if user_input.lower() == 'help':
-                    self._show_help()
-                    continue
-
-                try:
-                    if not self.verbose:
-                        self.ui.print_thinking()
-
-                    response = await self.process_message(user_input)
-
-                    if not self.verbose:
-                        self.ui.print_response(response)
-                    else:
-                        print(f"\n{C.BOLD}{C.GREEN}🎭 Orchestrator:{C.ENDC}\n{response}\n")
-
-                except Exception as e:
-                    if not self.verbose:
-                        self.ui.print_error(str(e))
-                    else:
-                        print(f"\n{C.RED}✗ An error occurred: {str(e)}{C.ENDC}")
-                        traceback.print_exc()
-
-        finally:
-            await self.cleanup()
-
-    def _show_help(self):
-        print(f"\n{C.CYAN}{'='*60}{C.ENDC}")
-        print(f"{C.BOLD}Available Agents:{C.ENDC}")
-        for agent_name, capabilities in self.agent_capabilities.items():
-            print(f"\n{C.GREEN}{agent_name.upper()}{C.ENDC}")
-            for cap in capabilities:
-                print(f"  • {cap}")
-        print(f"\n{C.CYAN}{'='*60}{C.ENDC}")
-        print(f"{C.YELLOW}Commands:{C.ENDC}")
-        print(f"  help  - Show this help")
-        print(f"  exit  - Exit the system")
-        print(f"{C.CYAN}{'='*60}{C.ENDC}\n")
-
-
-async def main():
-    verbose = "--verbose" in sys.argv or "-v" in sys.argv
-
-    orchestrator = OrchestratorAgent(connectors_dir="connectors", verbose=verbose)
-    await orchestrator.run_interactive()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

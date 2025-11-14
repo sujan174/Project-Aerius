@@ -2,6 +2,8 @@ import google.generativeai as genai
 import google.generativeai.protos as protos
 from typing import Any, Dict, List, Optional
 import json
+import hashlib
+import time
 
 from llms.base_llm import (
     BaseLLM,
@@ -126,7 +128,15 @@ class GeminiChatSession(ChatSession):
 
 
 class GeminiFlash(BaseLLM):
-    """Google Gemini 2.5 Flash implementation with function calling support"""
+    """
+    Google Gemini 2.5 Flash implementation with function calling support and model caching.
+
+    Caching Strategy:
+    - Caches GenerativeModel instances based on system instruction + tools + config
+    - Cache TTL: 3600 seconds (1 hour)
+    - Reduces model initialization overhead
+    - Future: Can be enhanced with Gemini's official prompt caching API
+    """
 
     SCHEMA_TYPE_MAP = {
         "string": protos.Type.STRING,
@@ -137,7 +147,12 @@ class GeminiFlash(BaseLLM):
         "array": protos.Type.ARRAY,
     }
 
-    def __init__(self, config: Optional[LLMConfig] = None):
+    # Class-level cache for model instances (shared across all GeminiFlash instances)
+    _model_cache: Dict[str, tuple[Any, float]] = {}  # cache_key -> (model, timestamp)
+    _cache_ttl: float = 3600.0  # 1 hour cache TTL
+    _enable_caching: bool = True  # Feature flag for caching
+
+    def __init__(self, config: Optional[LLMConfig] = None, enable_caching: bool = True):
         if config is None:
             config = LLMConfig(
                 model_name='models/gemini-2.5-flash',
@@ -151,6 +166,99 @@ class GeminiFlash(BaseLLM):
         self.provider_name = "google_gemini"
         self.supports_function_calling = True
         self.tools = []
+        self.enable_caching = enable_caching
+
+    @classmethod
+    def _generate_cache_key(cls, model_name: str, system_instruction: Optional[str], tools: List[Any]) -> str:
+        """
+        Generate a unique cache key for model configuration.
+
+        Args:
+            model_name: Model identifier
+            system_instruction: System prompt
+            tools: List of tools/functions
+
+        Returns:
+            MD5 hash as cache key
+        """
+        # Create a string representation of the configuration
+        key_parts = [
+            model_name,
+            system_instruction or "",
+            str(len(tools)),  # Include tool count
+            # Include tool names for uniqueness
+            "|".join(sorted([getattr(t, 'name', str(t)) for t in tools]))
+        ]
+
+        key_string = "||".join(key_parts)
+        return hashlib.md5(key_string.encode()).hexdigest()
+
+    @classmethod
+    def _get_cached_model(cls, cache_key: str) -> Optional[Any]:
+        """
+        Get cached model if available and not expired.
+
+        Returns:
+            Cached GenerativeModel or None
+        """
+        if not cls._enable_caching:
+            return None
+
+        if cache_key not in cls._model_cache:
+            return None
+
+        model, timestamp = cls._model_cache[cache_key]
+        age = time.time() - timestamp
+
+        if age > cls._cache_ttl:
+            # Cache expired, remove it
+            del cls._model_cache[cache_key]
+            return None
+
+        return model
+
+    @classmethod
+    def _cache_model(cls, cache_key: str, model: Any):
+        """Cache a model instance"""
+        if not cls._enable_caching:
+            return
+
+        cls._model_cache[cache_key] = (model, time.time())
+
+        # Clean up expired entries (simple cleanup strategy)
+        current_time = time.time()
+        expired_keys = [
+            key for key, (_, timestamp) in cls._model_cache.items()
+            if current_time - timestamp > cls._cache_ttl
+        ]
+        for key in expired_keys:
+            del cls._model_cache[key]
+
+    @classmethod
+    def get_cache_stats(cls) -> Dict[str, Any]:
+        """
+        Get cache statistics.
+
+        Returns:
+            Dict with cache size, hit/miss info
+        """
+        current_time = time.time()
+        active_entries = sum(
+            1 for _, timestamp in cls._model_cache.values()
+            if current_time - timestamp <= cls._cache_ttl
+        )
+
+        return {
+            'cache_size': len(cls._model_cache),
+            'active_entries': active_entries,
+            'ttl_seconds': cls._cache_ttl,
+            'caching_enabled': cls._enable_caching
+        }
+
+    @classmethod
+    def clear_cache(cls):
+        """Clear all cached models"""
+        cls._model_cache.clear()
 
     async def generate_content(self, prompt: str) -> LLMResponse:
         model = genai.GenerativeModel(
@@ -230,21 +338,43 @@ class GeminiFlash(BaseLLM):
         history: Optional[List[ChatMessage]] = None,
         enable_function_calling: bool = False
     ) -> ChatSession:
+        """
+        Start a chat session with optional caching.
+
+        Model instances are cached based on system instruction + tools configuration.
+        This significantly reduces initialization overhead for repeated chats.
+        """
         gemini_history = None
         if history:
             gemini_history = self._convert_history(history)
 
-        if enable_function_calling and self.tools:
-            model = genai.GenerativeModel(
-                self.config.model_name,
-                system_instruction=self.config.system_instruction,
-                tools=self.tools
-            )
-        else:
-            model = genai.GenerativeModel(
-                self.config.model_name,
-                system_instruction=self.config.system_instruction
-            )
+        # Generate cache key for this model configuration
+        tools_for_cache = self.tools if enable_function_calling else []
+        cache_key = self._generate_cache_key(
+            self.config.model_name,
+            self.config.system_instruction,
+            tools_for_cache
+        )
+
+        # Try to get cached model
+        model = self._get_cached_model(cache_key)
+
+        if model is None:
+            # Cache miss - create new model
+            if enable_function_calling and self.tools:
+                model = genai.GenerativeModel(
+                    self.config.model_name,
+                    system_instruction=self.config.system_instruction,
+                    tools=self.tools
+                )
+            else:
+                model = genai.GenerativeModel(
+                    self.config.model_name,
+                    system_instruction=self.config.system_instruction
+                )
+
+            # Cache the model
+            self._cache_model(cache_key, model)
 
         gemini_chat = model.start_chat(
             history=gemini_history,
