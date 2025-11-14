@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import google.generativeai.protos as protos
 from typing import Any, Dict, List, Optional
+import json
 
 from llms.base_llm import (
     BaseLLM,
@@ -165,6 +166,64 @@ class GeminiFlash(BaseLLM):
             finish_reason=str(response.candidates[0].finish_reason) if response.candidates else None,
             metadata={'response_object': response}
         )
+
+    async def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate JSON response using Gemini's JSON mode.
+
+        Args:
+            system_prompt: System instructions for the model
+            user_prompt: User's request
+            temperature: Optional temperature override
+
+        Returns:
+            Parsed JSON dictionary
+        """
+        # Create model with JSON response MIME type
+        generation_config = {
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "top_p": self.config.top_p,
+            "top_k": self.config.top_k,
+            "response_mime_type": "application/json"  # Request JSON response
+        }
+
+        model = genai.GenerativeModel(
+            self.config.model_name,
+            system_instruction=system_prompt,
+            generation_config=generation_config
+        )
+
+        # Generate content
+        response = await model.generate_content_async(user_prompt)
+
+        # Extract text and parse JSON
+        text = response.text if hasattr(response, 'text') else None
+
+        if not text:
+            raise ValueError("No response text from LLM")
+
+        try:
+            # Parse JSON response
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, try to extract JSON from text
+            # Sometimes LLM wraps JSON in markdown code blocks
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+
+            # Last resort: try to find any JSON object
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+
+            raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
 
     def start_chat(
         self,

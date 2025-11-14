@@ -8,7 +8,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-
 import google.generativeai as genai
 import google.generativeai.protos as protos
 from mcp import ClientSession, StdioServerParameters
