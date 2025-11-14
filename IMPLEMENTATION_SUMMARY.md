@@ -3,6 +3,16 @@
 ## Overview
 This implementation adds two critical features to Project Aerius that dramatically improve user experience and reduce friction:
 
+## Bug Fix (v2)
+**Issue**: Initial implementation was too aggressive and asked for confirmation on READ operations.
+**Fix**:
+- Refined logic to only force confirmation for DELETE operations and CREATE/UPDATE with low confidence
+- READ/SEARCH/ANALYZE operations never force confirmation (use base confidence logic)
+- Greetings and ambiguous queries use base logic (may clarify, but won't force confirmation)
+- Updated system prompt to emphasize immediate execution for most operations
+
+## Features
+
 1. **Smart Summarization & Result Synthesis** - Condenses verbose agent outputs into actionable summaries
 2. **Confidence-Based Autonomy** - Auto-executes safe operations while confirming risky ones
 
@@ -133,11 +143,12 @@ System: [executes deletion]
 ```
 1. User: "Show me Jira tickets for Project X"
 2. Intelligence: IntentType.READ → RiskLevel.LOW
-3. Risk Classifier: should_confirm() → (False, "Read-only - safe")
-4. Action: 'proceed' → Execute immediately
-5. Agent: Returns 2000 char verbose list
-6. Summarizer: Condenses to 400 char actionable summary
-7. User: Gets concise, useful response instantly
+3. Confidence-Based Logic: LOW risk → No forced confirmation
+4. Action: Use base confidence logic → 'proceed' or 'clarify'
+5. Execute immediately (no confirmation prompt)
+6. Agent: Returns 2000 char verbose list
+7. Summarizer: Condenses to 400 char actionable summary
+8. User: Gets concise, useful response instantly
 ```
 
 ### Write Operation Flow (High Confidence)

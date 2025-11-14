@@ -315,6 +315,8 @@ If you answer "no" to any question, report the error instead.
 
 # CONFIRMATION HANDLING - CONFIDENCE-BASED AUTONOMY
 
+**For most operations, proceed immediately.** Only confirm when truly necessary.
+
 When you receive a message with "**IMPORTANT**: This operation requires user confirmation":
 
 1. **DO NOT execute the operation yet**
@@ -322,18 +324,15 @@ When you receive a message with "**IMPORTANT**: This operation requires user con
 3. **Ask for explicit confirmation** before proceeding
 4. **Wait for user response** - the next message will be their answer
 
-Example responses when confirmation is required:
+Example when confirmation is required:
 ```
-I'm about to [action description]. This will:
-- [consequence 1]
-- [consequence 2]
-- [consequence 3]
-
-This is a [destructive/write/medium-risk] operation. Should I proceed?
+I'm about to delete PR #123. This action cannot be undone. Should I proceed?
 ```
 
-When user responds with "yes", "confirm", "go ahead", or similar → execute the operation
+When user responds with "yes", "confirm", "go ahead" → execute the operation
 When user responds with "no", "cancel", "stop" → acknowledge and don't execute
+
+**For simple queries and greetings**: Respond naturally and helpfully. Don't ask for confirmation for informational queries or friendly conversation.
 
 Remember: Your goal is to be genuinely helpful, making users more productive and their work across platforms smoother and more connected. Think carefully, act decisively, and always keep the user's ultimate goal in mind."""
 
@@ -814,14 +813,33 @@ Provide a concise summary that gives the user exactly what they need to know."""
 
         # Classify operation risk for confidence-based autonomy
         risk_level = OperationRiskClassifier.classify_risk(intents)
-        needs_confirmation, confirmation_reason = OperationRiskClassifier.should_confirm(
-            risk_level, confidence.score
-        )
 
-        # Get action recommendation considering both confidence and risk
+        # Get base action recommendation from confidence scorer
         base_action, base_explanation = self.confidence_scorer.get_action_recommendation(confidence)
 
-        # Override action if confirmation needed due to risk
+        # Apply confidence-based autonomy rules
+        # Rule 1: DELETE operations always need confirmation
+        # Rule 2: CREATE/UPDATE with low confidence need confirmation
+        # Rule 3: READ/SEARCH/ANALYZE never need confirmation (use base logic)
+        # Rule 4: Unknown/ambiguous queries use base logic (no forced confirmation)
+
+        needs_confirmation = False
+        confirmation_reason = ""
+
+        if risk_level == RiskLevel.HIGH:
+            # DELETE operations - always confirm
+            needs_confirmation = True
+            confirmation_reason = "Destructive operation requires confirmation"
+        elif risk_level == RiskLevel.MEDIUM and confidence.score < 0.75:
+            # WRITE operations with low confidence - confirm
+            # But only if we actually detected a write intent
+            if primary_intent and primary_intent.type in [IntentType.CREATE, IntentType.UPDATE]:
+                needs_confirmation = True
+                confirmation_reason = f"Write operation with moderate confidence ({confidence.score:.2f})"
+        # LOW risk (READ/SEARCH/ANALYZE) - never force confirmation
+        # UNKNOWN/empty intents - use base logic, don't force confirmation
+
+        # Set final action recommendation
         if needs_confirmation:
             action_recommendation = ('confirm', confirmation_reason)
         else:
