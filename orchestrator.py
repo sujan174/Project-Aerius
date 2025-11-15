@@ -24,7 +24,7 @@ from intelligence import (
     ConfidenceScorer, ConversationContextManager,
     HybridIntelligenceSystem
 )
-from intelligence.base_types import OperationRiskClassifier, RiskLevel
+from intelligence.base_types import OperationRiskClassifier, RiskLevel, IntentType
 
 from core.session_logger import SessionLogger
 from core.input_validator import InputValidator
