@@ -337,14 +337,6 @@ class AnalyticsCollector:
             print(f"[ANALYTICS] Saved to {filepath}")
 
 
-import json
-import time
-from typing import Dict, List, Optional, Any, Set
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, time as dt_time
-from collections import Counter, defaultdict
-
-
 @dataclass
 class AgentPreference:
     task_pattern: str

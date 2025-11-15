@@ -241,8 +241,5 @@ def format_duration(seconds: int) -> str:
         return f"{hours}h {minutes}m"
 
 
-# Clean imports - no need for Color anymore
-
-
 if __name__ == "__main__":
     asyncio.run(main())

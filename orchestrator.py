@@ -634,7 +634,6 @@ Provide a clear instruction describing what you want to accomplish.""",
             if self.verbose:
                 print(f"Context: {context_str[:200]}...")
 
-        import time
         start_time = time.time()
 
         try:
@@ -967,64 +966,9 @@ Provide a concise summary that gives the user exactly what they need to know."""
             if not function_calls:
                 break
 
-            # ALWAYS take only the FIRST function call (sequential execution only)
-            # This ensures reliability and prevents parallel execution issues
-            if len(function_calls) > 1 and False:  # Parallel execution DISABLED
-                if self.verbose:
-                    print(f"🔄 Found {len(function_calls)} agent calls - executing in parallel")
-
-                # Create AgentTask objects
-                tasks = []
-                for i, fc in enumerate(function_calls):
-                    tool_name = fc['tool_name']
-                    agent_name = fc['agent_name']
-                    args = fc['args']
-                    instruction = args.get("instruction", "")
-                    context = args.get("context", "")
-
-                    task = AgentTask(
-                        task_id=f"task_{iteration}_{i}",
-                        agent_name=agent_name,
-                        tool_name=tool_name,
-                        instruction=instruction,
-                        context=context,
-                        args=args
-                    )
-                    tasks.append(task)
-
-                # Execute tasks in parallel
-                try:
-                    results = await self.parallel_executor.execute_tasks(
-                        tasks,
-                        self._execute_agent_task
-                    )
-
-                    # Send ALL results back to LLM at once
-                    function_results = []
-                    for task in tasks:
-                        result = results.get(task.task_id, f"Error: No result for {task.agent_name}")
-                        function_results.append({
-                            'name': task.tool_name,
-                            'result': result
-                        })
-
-                    # Send all results to LLM
-                    response_task = asyncio.create_task(
-                        self.chat.send_message_with_functions("", *function_results)
-                    )
-                    await self._spinner(response_task, "Synthesizing parallel results")
-                    llm_response = response_task.result()
-
-                    response = llm_response.metadata.get('response_object') if llm_response.metadata else None
-
-                except Exception as e:
-                    if self.verbose:
-                        print(f"✗ Parallel execution failed: {e}")
-                    # Fall back to sequential on error
-                    function_calls = function_calls[:1]  # Take first only
-
-            # Single function call or fallback: execute sequentially (backward compatibility)
-            if len(function_calls) == 1:
+            # ALWAYS execute ONE agent call at a time for reliability
+            # Sequential execution ensures proper error handling and context management
+            if len(function_calls) >= 1:
                 fc = function_calls[0]
                 tool_name = fc['tool_name']
                 agent_name = fc['agent_name']
