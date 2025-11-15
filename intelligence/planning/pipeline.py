@@ -5,12 +5,12 @@ import math
 from typing import List, Dict, Set, Optional, Any, Tuple
 from datetime import datetime, timedelta
 
-from .base_types import (
+from ..base_types import (
     Intent, IntentType, Entity, EntityType,
     Task, ExecutionPlan, DependencyGraph,
     Confidence, ConfidenceLevel
 )
-from .system import get_global_cache, CacheKeyBuilder
+from ..context.system import get_global_cache, CacheKeyBuilder
 
 
 class IntentClassifier:

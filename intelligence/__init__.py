@@ -2,21 +2,38 @@
 Intelligence System v5.0
 
 Modern hybrid intelligence with LLM-based classification.
-Legacy keyword-based components removed in favor of semantic understanding.
+Reorganized into logical subdirectories for better maintainability.
+
+Structure:
+- classification/: Intent & entity classification (hybrid, LLM, fast filter)
+- planning/: Task decomposition and confidence scoring
+- context/: Conversation context and cache management
+- autonomy/: Confidence-based autonomy and risk classification
+- base_types.py: Core data types and enums
 """
 
+# Base types (core data structures)
 from .base_types import (
     Intent, IntentType, Entity, EntityType,
     Task, ExecutionPlan, DependencyGraph,
     Confidence, ConfidenceLevel
 )
 
-from .pipeline import (
+# Classification components (from classification/)
+from .classification import (
+    HybridIntelligenceSystem,
+    LLMIntentClassifier,
+    FastKeywordFilter
+)
+
+# Planning components (from planning/)
+from .planning import (
     TaskDecomposer,
     ConfidenceScorer
 )
 
-from .system import (
+# Context management (from context/)
+from .context import (
     ConversationContextManager,
     IntelligentCache,
     CacheKeyBuilder,
@@ -24,17 +41,22 @@ from .system import (
     configure_global_cache
 )
 
-# Modern hybrid intelligence components
-from .hybrid_system import HybridIntelligenceSystem
-from .llm_classifier import LLMIntentClassifier
-from .fast_filter import FastKeywordFilter
+# Autonomy components (from autonomy/)
+from .autonomy import (
+    RiskLevel,
+    OperationRiskClassifier
+)
 
 __all__ = [
     # Base types
     'Intent', 'IntentType', 'Entity', 'EntityType',
     'Task', 'ExecutionPlan', 'DependencyGraph',
     'Confidence', 'ConfidenceLevel',
-    # Task planning (still needed)
+    # Classification
+    'HybridIntelligenceSystem',
+    'LLMIntentClassifier',
+    'FastKeywordFilter',
+    # Planning
     'TaskDecomposer',
     'ConfidenceScorer',
     # Context management
@@ -43,10 +65,9 @@ __all__ = [
     'CacheKeyBuilder',
     'get_global_cache',
     'configure_global_cache',
-    # Modern hybrid intelligence
-    'HybridIntelligenceSystem',
-    'LLMIntentClassifier',
-    'FastKeywordFilter',
+    # Autonomy
+    'RiskLevel',
+    'OperationRiskClassifier',
 ]
 
 __version__ = '5.0.0'

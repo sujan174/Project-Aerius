@@ -22,9 +22,9 @@ from connectors.agent_intelligence import WorkspaceKnowledge, SharedContext
 from intelligence import (
     TaskDecomposer,
     ConfidenceScorer, ConversationContextManager,
-    HybridIntelligenceSystem
+    HybridIntelligenceSystem,
+    OperationRiskClassifier, RiskLevel, IntentType
 )
-from intelligence.base_types import OperationRiskClassifier, RiskLevel, IntentType
 
 from core.session_logger import SessionLogger
 from core.input_validator import InputValidator

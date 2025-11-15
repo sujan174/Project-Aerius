@@ -11,9 +11,9 @@ import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
-from intelligence.base_types import Intent, Entity, IntentType, EntityType
-from intelligence.fast_filter import FastKeywordFilter
-from intelligence.llm_classifier import LLMIntentClassifier
+from ..base_types import Intent, Entity, IntentType, EntityType
+from .fast_filter import FastKeywordFilter
+from .llm_classifier import LLMIntentClassifier
 from llms.base_llm import BaseLLM
 # Logging removed - using session logger in orchestrator
 

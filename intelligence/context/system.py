@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import threading
 import time
 
-from .base_types import (
+from ..base_types import (
     ConversationTurn, TrackedEntity, Entity, EntityType,
     Intent, Pattern, CacheEntry, hash_content,
     PipelineContext, ProcessingStage, ProcessingResult,

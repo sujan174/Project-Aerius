@@ -5,7 +5,7 @@ Routes complex requests to LLM for accurate classification.
 """
 
 from typing import Optional, Tuple
-from intelligence.base_types import IntentType, Intent, Entity, EntityType
+from ..base_types import IntentType, Intent, Entity, EntityType
 import re
 
 

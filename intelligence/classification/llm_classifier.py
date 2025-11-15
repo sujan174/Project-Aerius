@@ -10,7 +10,7 @@ import hashlib
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 
-from intelligence.base_types import Intent, IntentType, Entity, EntityType
+from ..base_types import Intent, IntentType, Entity, EntityType
 from llms.base_llm import BaseLLM
 
 # logger removed
