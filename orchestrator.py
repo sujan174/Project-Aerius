@@ -33,6 +33,8 @@ from core.resilience import RetryManager
 from core.user import UserPreferenceManager, AnalyticsCollector
 from core.parallel_executor import ParallelExecutor, AgentTask, TaskStatus
 from core.circuit_breaker import CircuitBreaker, CircuitConfig, CircuitBreakerError
+from core.advanced_cache import HybridCache, APIResponseCache
+from core.simple_embeddings import create_default_embeddings
 load_dotenv()
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
@@ -150,6 +152,26 @@ class OrchestratorAgent:
         )
 
         self.error_enhancer = ErrorMessageEnhancer(verbose=self.verbose)
+
+        # Advanced caching system with semantic deduplication and persistence
+        try:
+            embeddings = create_default_embeddings()
+            self.hybrid_cache = HybridCache(
+                cache_dir=".cache",
+                enable_semantic=True,
+                enable_persistent=True,
+                enable_api_cache=True,
+                embedding_model=embeddings,
+                verbose=self.verbose
+            )
+
+            if self.verbose:
+                print("✓ Hybrid cache initialized with semantic deduplication and persistence")
+
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠ Hybrid cache initialization failed, using basic cache: {e}")
+            self.hybrid_cache = None
 
         self.prefs_file = Path(f"data/preferences/{user_id}.json")
         self.prefs_file.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +424,12 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
             if hasattr(agent_instance, 'verbose'):
                 agent_instance.verbose = self.verbose
+
+            # Inject API cache if agent supports it
+            if self.hybrid_cache and hasattr(agent_instance, 'set_api_cache'):
+                agent_instance.set_api_cache(self.hybrid_cache.api_cache)
+                if self.verbose:
+                    messages.append(f"  ✓ Injected API cache into {agent_name}")
 
             try:
                 await agent_instance.initialize()
