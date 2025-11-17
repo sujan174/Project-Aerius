@@ -68,6 +68,7 @@ class EnhancedUI:
             markup=True,
             emoji=True,
             soft_wrap=True,
+            # Don't set width - let it auto-detect terminal width
         )
 
         # Color scheme - minimal and professional
@@ -273,25 +274,20 @@ class EnhancedUI:
 
         self.console.print()
 
-        # Use Rich's markdown renderer for beautiful output
+        # Print title header
+        self.console.print(f"[bold {self.colors['primary']}]Aerius[/]")
+        self.console.print(f"[{self.colors['dim']}]{'─' * (self.console.width - 2 if self.console.width else 80)}[/]")
+        self.console.print()
+
+        # Use Rich's markdown renderer for beautiful output - no panel to avoid width constraints
         md = Markdown(
             response,
             code_theme="monokai",
             inline_code_lexer="python",
         )
 
-        # Wrap in a beautiful panel like Gemini CLI
-        panel = Panel(
-            md,
-            border_style=self.colors['primary'],
-            box=box.ROUNDED,
-            padding=(1, 2),
-            title=f"[bold][{self.colors['primary']}]Aerius[/{self.colors['primary']}][/bold]",
-            title_align="left",
-            expand=True,  # Expand to full terminal width to prevent truncation
-            width=None,  # Auto-calculate width based on console
-        )
-        self.console.print(panel, overflow="fold", crop=False)
+        # Print markdown directly without Panel to prevent truncation
+        self.console.print(md)
         self.console.print()
 
     def print_code(self, code: str, language: str = "python", line_numbers: bool = True):
