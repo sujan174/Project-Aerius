@@ -544,7 +544,13 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         # Load agents sequentially
         for file_path in connector_files:
             try:
-                agent_name, agent_instance, capabilities, messages = await self._load_single_agent(file_path)
+                result = await self._load_single_agent(file_path)
+
+                # Skip agents that returned None (e.g., base_agent, agent_intelligence)
+                if result is None:
+                    continue
+
+                agent_name, agent_instance, capabilities, messages = result
 
                 for msg in messages:
                     if self.verbose:

@@ -5,6 +5,7 @@ import sys
 import json
 import asyncio
 import time
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -12,6 +13,12 @@ import google.generativeai as genai
 import google.generativeai.protos as protos
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+# Suppress warnings about tasks/coroutines from MCP background cleanup
+# This is necessary because anyio/MCP creates background tasks that may raise
+# exceptions during cleanup when connections are cancelled/timed out
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*coroutine.*was never awaited')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*Task.*exception was never retrieved')
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent, safe_extract_response_text
@@ -591,8 +598,19 @@ Remember: You're not just executing commands—you're helping users build a powe
                     )
                     self.available_tools = tools_list.tools
 
+                except asyncio.CancelledError:
+                    # Handle cancellation gracefully (from timeout or external cancel)
+                    await self._cleanup_connection()
+                    # Give background tasks time to finish cleanup
+                    await asyncio.sleep(0.1)
+                    raise RuntimeError(
+                        f"Connection cancelled during initialization. "
+                        "The Notion MCP server may be slow or unavailable."
+                    )
                 except asyncio.TimeoutError:
                     await self._cleanup_connection()
+                    # Give background tasks time to finish cleanup
+                    await asyncio.sleep(0.1)
                     raise RuntimeError(
                         f"Connection timeout after {connection_timeout}s. "
                         "The Notion MCP server may be slow or unavailable."
@@ -604,15 +622,21 @@ Remember: You're not just executing commands—you're helping users build a powe
                         # This is an MCP cleanup issue, not a real initialization failure
                         # Try cleanup but don't propagate this specific error
                         await self._cleanup_connection()
+                        # Give background tasks time to finish cleanup
+                        await asyncio.sleep(0.1)
                         raise RuntimeError(
                             "Notion MCP connection was interrupted. This is usually temporary. "
                             "Try again or set DISABLED_AGENTS=notion to skip this agent."
                         )
                     else:
                         await self._cleanup_connection()
+                        # Give background tasks time to finish cleanup
+                        await asyncio.sleep(0.1)
                         raise
                 except Exception as e:
                     await self._cleanup_connection()
+                    # Give background tasks time to finish cleanup
+                    await asyncio.sleep(0.1)
                     raise
 
                 gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
@@ -1333,39 +1357,50 @@ Remember: You're not just executing commands—you're helping users build a powe
 
     async def _cleanup_connection(self):
         """Internal cleanup helper for MCP connection resources"""
-        # Close session if it was successfully entered
-        if self.session and self.session_entered:
-            try:
-                await self.session.__aexit__(None, None, None)
-            except Exception as e:
-                # Suppress all cleanup errors to prevent cascading failures
-                if self.verbose:
-                    print(f"[NOTION AGENT] Suppressed session cleanup error: {e}")
-            finally:
-                self.session = None
-                self.session_entered = False
+        import warnings
 
-        # Close stdio context if it was successfully entered
-        # IMPORTANT: The MCP stdio_client uses anyio which requires context managers
-        # to be entered/exited in the same task. If cancelled, this may fail.
-        if self.stdio_context and self.stdio_context_entered:
-            try:
-                await self.stdio_context.__aexit__(None, None, None)
-            except RuntimeError as e:
-                # Specifically suppress "cancel scope in different task" errors
-                # This happens when the agent is cancelled/timed out
-                if "cancel scope" in str(e).lower() or "different task" in str(e).lower():
-                    # This is expected during cancellation, silently ignore
+        # Suppress warnings about unawaited coroutines/tasks during cleanup
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*coroutine.*was never awaited')
+            warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*Task.*exception was never retrieved')
+
+            # Close session if it was successfully entered
+            if self.session and self.session_entered:
+                try:
+                    await self.session.__aexit__(None, None, None)
+                except Exception as e:
+                    # Suppress all cleanup errors to prevent cascading failures
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Suppressed session cleanup error: {e}")
+                finally:
+                    self.session = None
+                    self.session_entered = False
+
+            # Close stdio context if it was successfully entered
+            # IMPORTANT: The MCP stdio_client uses anyio which requires context managers
+            # to be entered/exited in the same task. If cancelled, this may fail.
+            if self.stdio_context and self.stdio_context_entered:
+                try:
+                    await self.stdio_context.__aexit__(None, None, None)
+                except RuntimeError as e:
+                    # Specifically suppress "cancel scope in different task" errors
+                    # This happens when the agent is cancelled/timed out
+                    error_str = str(e).lower()
+                    if "cancel scope" in error_str or "different task" in error_str:
+                        # This is expected during cancellation, silently ignore
+                        pass
+                    elif self.verbose:
+                        print(f"[NOTION AGENT] Suppressed stdio cleanup error: {e}")
+                except (asyncio.CancelledError, GeneratorExit):
+                    # These are expected during cleanup, silently ignore
                     pass
-                elif self.verbose:
-                    print(f"[NOTION AGENT] Suppressed stdio cleanup error: {e}")
-            except Exception as e:
-                # Suppress all other cleanup errors
-                if self.verbose:
-                    print(f"[NOTION AGENT] Suppressed stdio cleanup error: {e}")
-            finally:
-                self.stdio_context = None
-                self.stdio_context_entered = False
+                except Exception as e:
+                    # Suppress all other cleanup errors
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Suppressed stdio cleanup error: {e}")
+                finally:
+                    self.stdio_context = None
+                    self.stdio_context_entered = False
 
     async def cleanup(self):
         """Disconnect from Notion and clean up resources"""
