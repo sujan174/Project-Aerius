@@ -460,9 +460,26 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 return (agent_name, agent_instance, capabilities, messages)
 
             except Exception as init_error:
-                # Silently handle initialization errors unless verbose
-                if self.verbose:
-                    messages.append(f"  ✗ Failed to initialize {agent_name}: {init_error}")
+                # Show helpful error messages for common issues
+                error_str = str(init_error).lower()
+
+                # Detect common initialization errors
+                if "environment variable" in error_str or "must be set" in error_str:
+                    # Missing credentials - show clear message
+                    print(f"⚠ {agent_name} agent: Missing required environment variables", flush=True)
+                    if self.verbose:
+                        print(f"  Details: {init_error}", flush=True)
+                elif "npx" in error_str or "command not found" in error_str:
+                    print(f"⚠ {agent_name} agent: npx/npm not installed", flush=True)
+                elif "connection" in error_str or "network" in error_str:
+                    print(f"⚠ {agent_name} agent: Network/connection error", flush=True)
+                else:
+                    # Generic error - show in verbose mode only
+                    if self.verbose:
+                        print(f"⚠ {agent_name} agent initialization failed: {str(init_error)[:100]}", flush=True)
+
+                messages.append(f"  ✗ Failed to initialize {agent_name}: {init_error}")
+
                 try:
                     if hasattr(agent_instance, 'cleanup'):
                         await agent_instance.cleanup()
@@ -501,32 +518,23 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         if self.verbose:
             print(f"Loading {len(connector_files)} agent(s) in parallel...")
 
-        # Only enable safe agents by default (non-MCP agents)
-        # MCP agents require subprocess management and often hang
-        enable_all = os.environ.get("ENABLE_ALL_AGENTS", "") == "true"
+        # Check for explicitly disabled agents via environment variable
+        # Example: DISABLED_AGENTS="slack,jira,github" to disable specific agents
+        disabled_agents_str = os.environ.get("DISABLED_AGENTS", "")
+        disabled_agents = [a.strip().lower() for a in disabled_agents_str.split(",") if a.strip()]
 
-        if enable_all:
-            # User explicitly wants all agents
-            disabled_agents = []
-        else:
-            # Default: only enable code_reviewer (non-MCP agent)
-            # Disable all MCP-based agents that spawn subprocesses
-            safe_agents = {"code_reviewer"}  # Only agents that don't use MCP
-            disabled_agents = []
-
-            for f in connector_files:
-                agent_name = f.stem.replace("_agent", "")
-                if agent_name not in safe_agents and agent_name not in ["base", "agent_intelligence"]:
-                    disabled_agents.append(agent_name.lower())
+        if disabled_agents and self.verbose:
+            print(f"Disabled agents: {', '.join(disabled_agents)}")
 
         # Wrap each agent load with a timeout to prevent hanging
         async def load_with_timeout(file_path):
             agent_name = file_path.stem.replace("_agent", "")
 
-            # Skip disabled agents
+            # Skip explicitly disabled agents
             if agent_name.lower() in disabled_agents:
-                print(f"⊘ {agent_name} agent disabled (via DISABLED_AGENTS), skipping...", flush=True)
-                return (agent_name, None, None, [f"  ⊘ {agent_name} disabled by configuration"])
+                if self.verbose:
+                    print(f"⊘ {agent_name} agent disabled (via DISABLED_AGENTS env var), skipping...", flush=True)
+                return (agent_name, None, None, [f"  ⊘ {agent_name} disabled by user configuration"])
 
             try:
                 return await asyncio.wait_for(
@@ -610,6 +618,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         print(f"✓ Loaded {successful} agent(s) successfully.", flush=True)
         if failed > 0:
             print(f"⚠ {failed} agent(s) failed to load but system will continue.", flush=True)
+            if not self.verbose:
+                print("Tip: Run with --verbose to see detailed error messages", flush=True)
+                print("Tip: Check .env file for missing API keys/tokens", flush=True)
 
         if self.verbose:
             print("="*60)
