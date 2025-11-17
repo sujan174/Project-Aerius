@@ -289,8 +289,9 @@ class EnhancedUI:
             title=f"[bold][{self.colors['primary']}]Aerius[/{self.colors['primary']}][/bold]",
             title_align="left",
             expand=True,  # Expand to full terminal width to prevent truncation
+            width=None,  # Auto-calculate width based on console
         )
-        self.console.print(panel)
+        self.console.print(panel, overflow="fold", crop=False)
         self.console.print()
 
     def print_code(self, code: str, language: str = "python", line_numbers: bool = True):
