@@ -600,7 +600,10 @@ Remember: You're not just executing commands—you're helping users build a powe
 
                 except asyncio.CancelledError:
                     # Handle cancellation gracefully (from timeout or external cancel)
-                    await self._cleanup_connection()
+                    try:
+                        await self._cleanup_connection()
+                    except BaseException:
+                        pass  # Suppress all cleanup errors (including CancelledError)
                     # Give background tasks time to finish cleanup
                     await asyncio.sleep(0.1)
                     raise RuntimeError(
@@ -608,7 +611,10 @@ Remember: You're not just executing commands—you're helping users build a powe
                         "The Notion MCP server may be slow or unavailable."
                     )
                 except asyncio.TimeoutError:
-                    await self._cleanup_connection()
+                    try:
+                        await self._cleanup_connection()
+                    except BaseException:
+                        pass  # Suppress all cleanup errors (including CancelledError)
                     # Give background tasks time to finish cleanup
                     await asyncio.sleep(0.1)
                     raise RuntimeError(
@@ -621,7 +627,10 @@ Remember: You're not just executing commands—you're helping users build a powe
                     if "cancel scope" in error_str or "different task" in error_str:
                         # This is an MCP cleanup issue, not a real initialization failure
                         # Try cleanup but don't propagate this specific error
-                        await self._cleanup_connection()
+                        try:
+                            await self._cleanup_connection()
+                        except BaseException:
+                            pass  # Suppress all cleanup errors (including CancelledError)
                         # Give background tasks time to finish cleanup
                         await asyncio.sleep(0.1)
                         raise RuntimeError(
@@ -629,12 +638,18 @@ Remember: You're not just executing commands—you're helping users build a powe
                             "Try again or set DISABLED_AGENTS=notion to skip this agent."
                         )
                     else:
-                        await self._cleanup_connection()
+                        try:
+                            await self._cleanup_connection()
+                        except BaseException:
+                            pass  # Suppress all cleanup errors (including CancelledError)
                         # Give background tasks time to finish cleanup
                         await asyncio.sleep(0.1)
                         raise
                 except Exception as e:
-                    await self._cleanup_connection()
+                    try:
+                        await self._cleanup_connection()
+                    except BaseException:
+                        pass  # Suppress all cleanup errors (including CancelledError)
                     # Give background tasks time to finish cleanup
                     await asyncio.sleep(0.1)
                     raise
@@ -1368,6 +1383,10 @@ Remember: You're not just executing commands—you're helping users build a powe
             if self.session and self.session_entered:
                 try:
                     await self.session.__aexit__(None, None, None)
+                except asyncio.CancelledError:
+                    # Session was cancelled during cleanup - this is expected
+                    # Don't propagate CancelledError during cleanup
+                    pass
                 except Exception as e:
                     # Suppress all cleanup errors to prevent cascading failures
                     if self.verbose:
