@@ -236,7 +236,16 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
             self._initialize_model()
 
             self.initialized = True
-            await self._prefetch_metadata()
+
+            # Prefetch metadata in background (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=10.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[BROWSER AGENT] Metadata prefetch timed out (continuing without cache)")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[BROWSER AGENT] Metadata prefetch failed: {str(e)[:100]}")
 
             if self.verbose:
                 print(f"[BROWSER AGENT] Initialization complete. {len(self.available_tools)} tools available.")

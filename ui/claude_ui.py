@@ -203,6 +203,7 @@ class ClaudeUI:
     def print_prompt(self):
         """Display clean prompt"""
         self._write(f"{Colors.BOLD}{Colors.CYAN}>{Colors.RESET} ", end='')
+        sys.stdout.flush()  # Force flush to ensure prompt is displayed
 
     def print_divider(self):
         """Print subtle divider"""

@@ -611,7 +611,17 @@ Remember: You're not just executing commands—you're helping users build a powe
 
                 self.initialized = True
 
-                await self._prefetch_metadata()
+                # Prefetch metadata in background (non-blocking, with timeout)
+                try:
+                    await asyncio.wait_for(self._prefetch_metadata(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Metadata prefetch timed out (continuing without cache)")
+                    self.metadata_cache = {'databases': {}, 'pages': {}}
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[NOTION AGENT] Metadata prefetch failed: {str(e)[:100]}")
+                    self.metadata_cache = {'databases': {}, 'pages': {}}
 
                 if self.verbose:
                     print(f"[NOTION AGENT] Initialization complete. {len(self.available_tools)} tools available.")

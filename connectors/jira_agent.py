@@ -13,6 +13,7 @@ import google.generativeai as genai
 import google.generativeai.protos as protos
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from connectors.mcp_stdio_wrapper import quiet_stdio_client
 
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -365,7 +366,18 @@ Remember: You're not just executing commands—you're helping users manage their
             await self._load_tools()
             self._initialize_model()
             self.initialized = True
-            await self._prefetch_metadata()
+
+            # Prefetch metadata in background (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=10.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[JIRA AGENT] Metadata prefetch timed out (continuing without cache)")
+                self.metadata_cache = {'projects': {}}
+            except Exception as e:
+                if self.verbose:
+                    print(f"[JIRA AGENT] Metadata prefetch failed: {str(e)[:100]}")
+                self.metadata_cache = {'projects': {}}
 
             if self.verbose:
                 print(f"[JIRA AGENT] Initialization complete. {len(self.available_tools)} tools available.")
@@ -425,7 +437,7 @@ Remember: You're not just executing commands—you're helping users manage their
     async def _connect_to_mcp(self, server_params: StdioServerParameters):
         # Establish connection to MCP server
         try:
-            self.stdio_context = stdio_client(server_params)
+            self.stdio_context = quiet_stdio_client(server_params)
             stdio, write = await self.stdio_context.__aenter__()
             self.stdio_context_entered = True
 
@@ -479,8 +491,9 @@ Remember: You're not just executing commands—you're helping users manage their
         ]
 
     async def _prefetch_metadata(self):
-        # Prefetch Jira metadata for caching
+        """Prefetch metadata - with timeout protection to avoid blocking initialization"""
         try:
+            # Check cache first
             cached = self.knowledge.get_metadata_cache('jira')
             if cached:
                 self.metadata_cache = cached
@@ -491,15 +504,8 @@ Remember: You're not just executing commands—you're helping users manage their
             if self.verbose:
                 print(f"[JIRA AGENT] Prefetching metadata...")
 
+            # Fetch projects only (skip detailed metadata to speed up init)
             projects = await self._fetch_all_projects()
-
-            for project_key in list(projects.keys())[:10]:
-                try:
-                    projects[project_key]['issue_types'] = await self._fetch_project_issue_types(project_key)
-                    projects[project_key]['fields'] = await self._fetch_project_fields(project_key)
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[JIRA AGENT] Warning: Could not fetch metadata for {project_key}: {e}")
 
             self.metadata_cache = {
                 'projects': projects,
@@ -512,9 +518,11 @@ Remember: You're not just executing commands—you're helping users manage their
                 print(f"[JIRA AGENT] Cached metadata for {len(projects)} projects")
 
         except Exception as e:
+            # Silently fail - metadata is optional for agent operation
             if self.verbose:
-                print(f"[JIRA AGENT] Warning: Metadata prefetch failed: {e}")
-            print(f"[JIRA AGENT] Continuing without metadata cache (operations may be slower)")
+                print(f"[JIRA AGENT] Metadata prefetch skipped: {str(e)[:100]}")
+            # Set empty cache to avoid repeated attempts
+            self.metadata_cache = {'projects': {}}
 
     async def _fetch_all_projects(self) -> Dict:
         # Fetch all accessible projects

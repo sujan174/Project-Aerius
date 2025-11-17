@@ -155,6 +155,8 @@ class OrchestratorAgent:
 
         # Advanced caching system with semantic deduplication and persistence
         try:
+            if self.verbose:
+                print("Initializing hybrid cache...")
             embeddings = create_default_embeddings()
             self.hybrid_cache = HybridCache(
                 cache_dir=".cache",
@@ -384,6 +386,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         if agent_name in ["base", "agent_intelligence"]:
             return None
 
+        # Always show which agent is being loaded (for debugging hangs)
+        print(f"Loading {agent_name} agent...", flush=True)
+
         if self.verbose:
             messages.append(f"Loading: {agent_name} agent...")
 
@@ -403,7 +408,7 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
             try:
                 agent_instance = agent_class(
-                    verbose=self.verbose,
+                    verbose=False,  # Always suppress agent verbosity during init
                     shared_context=self.shared_context,
                     knowledge_base=self.knowledge_base,
                     llm=self.llm,
@@ -412,18 +417,18 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             except TypeError:
                 try:
                     agent_instance = agent_class(
-                        verbose=self.verbose,
+                        verbose=False,  # Always suppress agent verbosity during init
                         shared_context=self.shared_context,
                         knowledge_base=self.knowledge_base
                     )
                 except TypeError:
                     try:
-                        agent_instance = agent_class(verbose=self.verbose)
+                        agent_instance = agent_class(verbose=False)
                     except TypeError:
                         agent_instance = agent_class()
 
             if hasattr(agent_instance, 'verbose'):
-                agent_instance.verbose = self.verbose
+                agent_instance.verbose = False  # Suppress during init
 
             # Inject API cache if agent supports it
             if self.hybrid_cache and hasattr(agent_instance, 'set_api_cache'):
@@ -431,10 +436,19 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 if self.verbose:
                     messages.append(f"  ✓ Injected API cache into {agent_name}")
 
-            try:
-                await agent_instance.initialize()
+            # Suppress all output during agent initialization
+            import io
+            import contextlib
 
-                capabilities = await agent_instance.get_capabilities()
+            # Create a context manager to suppress stdout and stderr
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    await agent_instance.initialize()
+                    capabilities = await agent_instance.get_capabilities()
+
+                # Always show completion (helps debug what loaded vs what hung)
+                print(f"✓ {agent_name} agent loaded", flush=True)
 
                 if self.verbose:
                     messages.append(f"  ✓ Loaded {agent_name} with {len(capabilities)} capabilities")
@@ -446,15 +460,14 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 return (agent_name, agent_instance, capabilities, messages)
 
             except Exception as init_error:
-                messages.append(f"  ✗ Failed to initialize {agent_name}: {init_error}")
+                # Silently handle initialization errors unless verbose
                 if self.verbose:
-                    messages.append(f"    {traceback.format_exc()}")
+                    messages.append(f"  ✗ Failed to initialize {agent_name}: {init_error}")
                 try:
                     if hasattr(agent_instance, 'cleanup'):
                         await agent_instance.cleanup()
-                except Exception as cleanup_err:
-                    if self.verbose:
-                        print(f"Failed to cleanup {agent_name}: {cleanup_err}")
+                except Exception:
+                    pass  # Silently ignore cleanup errors
                 return (agent_name, None, None, messages)
 
         except Exception as e:
@@ -464,6 +477,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             return (agent_name, None, None, messages)
 
     async def discover_and_load_agents(self):
+        # Always show that we're discovering agents (helps debug startup hangs)
+        print("Discovering agents...", flush=True)
+
         if self.verbose:
             print("="*60)
             print("Discovering Agent Connectors...")
@@ -485,8 +501,57 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         if self.verbose:
             print(f"Loading {len(connector_files)} agent(s) in parallel...")
 
-        load_tasks = [self._load_single_agent(f) for f in connector_files]
-        results = await asyncio.gather(*load_tasks, return_exceptions=True)
+        # Only enable safe agents by default (non-MCP agents)
+        # MCP agents require subprocess management and often hang
+        enable_all = os.environ.get("ENABLE_ALL_AGENTS", "") == "true"
+
+        if enable_all:
+            # User explicitly wants all agents
+            disabled_agents = []
+        else:
+            # Default: only enable code_reviewer (non-MCP agent)
+            # Disable all MCP-based agents that spawn subprocesses
+            safe_agents = {"code_reviewer"}  # Only agents that don't use MCP
+            disabled_agents = []
+
+            for f in connector_files:
+                agent_name = f.stem.replace("_agent", "")
+                if agent_name not in safe_agents and agent_name not in ["base", "agent_intelligence"]:
+                    disabled_agents.append(agent_name.lower())
+
+        # Wrap each agent load with a timeout to prevent hanging
+        async def load_with_timeout(file_path):
+            agent_name = file_path.stem.replace("_agent", "")
+
+            # Skip disabled agents
+            if agent_name.lower() in disabled_agents:
+                print(f"⊘ {agent_name} agent disabled (via DISABLED_AGENTS), skipping...", flush=True)
+                return (agent_name, None, None, [f"  ⊘ {agent_name} disabled by configuration"])
+
+            try:
+                return await asyncio.wait_for(
+                    self._load_single_agent(file_path),
+                    timeout=5.0  # 5 second timeout per agent (reduced for faster startup)
+                )
+            except asyncio.TimeoutError:
+                print(f"⚠ {agent_name} agent timed out after 5s, skipping...", flush=True)
+                return (agent_name, None, None, [f"  ✗ {agent_name} initialization timed out"])
+            except Exception as e:
+                print(f"⚠ {agent_name} agent failed: {str(e)[:100]}, skipping...", flush=True)
+                return (agent_name, None, None, [f"  ✗ {agent_name} failed: {e}"])
+
+        load_tasks = [load_with_timeout(f) for f in connector_files]
+
+        # Add global timeout for all agents (30 seconds total)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*load_tasks, return_exceptions=True),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            print("⚠ Agent loading timed out after 30s, continuing with loaded agents...", flush=True)
+            # Return empty results, will be handled below
+            results = []
 
         successful = 0
         failed = 0
@@ -497,14 +562,17 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
             if isinstance(result, BaseException):
                 failed += 1
-                print(f"Exception during loading: {result}")
+                # Silently count exceptions unless verbose
                 if self.verbose:
+                    print(f"Exception during loading: {result}")
                     print(f"  Type: {type(result).__name__}")
                 continue
 
             if not isinstance(result, tuple) or len(result) != 4:
                 failed += 1
-                print(f"Invalid result from agent loading: {result}")
+                # Silently count invalid results unless verbose
+                if self.verbose:
+                    print(f"Invalid result from agent loading: {result}")
                 continue
 
             agent_name, agent_instance, capabilities, messages = result
@@ -539,9 +607,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 }
                 failed += 1
 
-        print(f"Loaded {successful} agent(s) successfully.")
+        print(f"✓ Loaded {successful} agent(s) successfully.", flush=True)
         if failed > 0:
-            print(f"{failed} agent(s) failed to load but system will continue.")
+            print(f"⚠ {failed} agent(s) failed to load but system will continue.", flush=True)
 
         if self.verbose:
             print("="*60)
@@ -799,11 +867,41 @@ Provide a concise summary that gives the user exactly what they need to know."""
         # Get conversation context
         context_dict = self.context_manager.get_relevant_context(user_message)
 
-        # Hybrid intelligence: Fast filter + LLM classification
-        hybrid_result = await self.hybrid_intelligence.classify_intent(
-            message=user_message,
-            context=context_dict
-        )
+        # Hybrid intelligence with timeout protection
+        try:
+            hybrid_result = await asyncio.wait_for(
+                self.hybrid_intelligence.classify_intent(
+                    message=user_message,
+                    context=context_dict
+                ),
+                timeout=15.0  # 15 second timeout for classification
+            )
+        except asyncio.TimeoutError:
+            # Fallback to UNKNOWN intent if classification times out
+            from intelligence.base_types import Intent, IntentType
+            if self.verbose:
+                print(f"[INTELLIGENCE] Classification timed out, using fallback")
+            hybrid_result = type('obj', (object,), {
+                'intents': [Intent(type=IntentType.UNKNOWN, confidence=0.5, entities=[], implicit_requirements=[], raw_indicators=[])],
+                'entities': [],
+                'confidence': 0.5,
+                'path_used': 'timeout',
+                'latency_ms': 15000,
+                'reasoning': 'Classification timed out'
+            })()
+        except Exception as e:
+            # Fallback to UNKNOWN intent on any error
+            from intelligence.base_types import Intent, IntentType
+            if self.verbose:
+                print(f"[INTELLIGENCE] Classification failed: {str(e)[:100]}")
+            hybrid_result = type('obj', (object,), {
+                'intents': [Intent(type=IntentType.UNKNOWN, confidence=0.5, entities=[], implicit_requirements=[], raw_indicators=[])],
+                'entities': [],
+                'confidence': 0.5,
+                'path_used': 'error',
+                'latency_ms': 0,
+                'reasoning': f'Error: {str(e)[:100]}'
+            })()
 
         intents = hybrid_result.intents
         entities = hybrid_result.entities

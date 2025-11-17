@@ -401,8 +401,15 @@ Remember: Your goal is to help developers ship secure, performant, and maintaina
 
             self.initialized = True
 
-            # Feature #1: Prefetch code review patterns
-            await self._prefetch_metadata()
+            # Feature #1: Prefetch code review patterns (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=5.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[CODE REVIEWER] Metadata prefetch timed out (continuing without cache)")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[CODE REVIEWER] Metadata prefetch failed: {str(e)[:100]}")
 
             if self.verbose:
                 print(f"[CODE REVIEWER] Initialization complete with {self.llm}")

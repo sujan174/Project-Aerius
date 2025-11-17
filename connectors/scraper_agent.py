@@ -269,8 +269,15 @@ Remember: Web scraping is a powerful tool for data collection. Use it ethically,
 
             self.initialized = True
 
-            # Feature #1: Prefetch metadata for faster operations
-            await self._prefetch_metadata()
+            # Feature #1: Prefetch metadata for faster operations (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=10.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[SCRAPER AGENT] Metadata prefetch timed out (continuing without cache)")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[SCRAPER AGENT] Metadata prefetch failed: {str(e)[:100]}")
 
             if self.verbose:
                 print(f"[SCRAPER AGENT] Initialization complete. {len(self.available_tools)} tools available.")

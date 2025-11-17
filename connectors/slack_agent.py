@@ -13,6 +13,7 @@ import google.generativeai as genai
 import google.generativeai.protos as protos
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from connectors.mcp_stdio_wrapper import quiet_stdio_client
 
 # Add parent directory to path to import base_agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -657,7 +658,18 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
             self._initialize_model()
 
             self.initialized = True
-            await self._prefetch_metadata()
+
+            # Prefetch metadata in background (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=5.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[SLACK AGENT] Metadata prefetch timed out (continuing without cache)")
+                self.metadata_cache = {'channels': {}, 'users': {}}
+            except Exception as e:
+                if self.verbose:
+                    print(f"[SLACK AGENT] Metadata prefetch failed: {str(e)[:100]}")
+                self.metadata_cache = {'channels': {}, 'users': {}}
 
             if self.verbose:
                 print(f"[SLACK AGENT] Initialization complete. {len(self.available_tools)} tools available.")
@@ -701,7 +713,7 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
 
     async def _connect_to_mcp(self, server_params: StdioServerParameters):
         try:
-            self.stdio_context = stdio_client(server_params)
+            self.stdio_context = quiet_stdio_client(server_params)
             stdio, write = await self.stdio_context.__aenter__()
             self.stdio_context_entered = True
 
@@ -731,40 +743,41 @@ Remember: Slack is the nervous system of distributed teams. Every message you cr
         )
 
     async def _prefetch_metadata(self):
+        """Prefetch metadata - runs in background, non-blocking on errors"""
         try:
+            # Check cache first
             cached = self.knowledge.get_metadata_cache('slack')
             if cached:
                 self.metadata_cache = cached
                 if self.verbose:
-                    print(f"[SLACK AGENT] Loaded metadata from cache ({len(cached.get('channels', {}))} channels, {len(cached.get('users', {}))} users)")
+                    print(f"[SLACK AGENT] Loaded metadata from cache ({len(cached.get('channels', {}))} channels)")
                 return
 
             if self.verbose:
                 print(f"[SLACK AGENT] Prefetching metadata...")
 
+            # Only fetch channels (users endpoint is not available in MCP server)
             channels = await self._fetch_all_channels()
             if self.verbose:
                 print(f"[SLACK AGENT] Prefetched {len(channels)} channels")
 
-            users = await self._fetch_all_users()
-            if self.verbose:
-                print(f"[SLACK AGENT] Prefetched {len(users)} users")
-
             self.metadata_cache = {
                 'channels': channels,
-                'users': users,
+                'users': {},  # User fetching not supported by current MCP server
                 'fetched_at': asyncio.get_event_loop().time()
             }
 
             self.knowledge.save_metadata_cache('slack', self.metadata_cache, ttl_seconds=3600)
 
             if self.verbose:
-                print(f"[SLACK AGENT] Cached metadata: {len(channels)} channels, {len(users)} users")
+                print(f"[SLACK AGENT] Cached metadata: {len(channels)} channels")
 
         except Exception as e:
+            # Silently fail - metadata is optional for agent operation
             if self.verbose:
-                print(f"[SLACK AGENT] Warning: Metadata prefetch failed: {e}")
-            print(f"[SLACK AGENT] Continuing without metadata cache (operations may be slower)")
+                print(f"[SLACK AGENT] Metadata prefetch skipped: {str(e)[:100]}")
+            # Set empty cache to avoid repeated attempts
+            self.metadata_cache = {'channels': {}, 'users': {}}
 
     async def _fetch_all_channels(self) -> Dict:
         try:

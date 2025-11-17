@@ -13,6 +13,7 @@ import google.generativeai as genai
 import google.generativeai.protos as protos
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from connectors.mcp_stdio_wrapper import quiet_stdio_client
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from connectors.base_agent import BaseAgent, safe_extract_response_text
@@ -895,7 +896,7 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             )
 
             try:
-                self.stdio_context = stdio_client(server_params)
+                self.stdio_context = quiet_stdio_client(server_params)
                 stdio, write = await self.stdio_context.__aenter__()
                 self.stdio_context_entered = True
 
@@ -921,7 +922,17 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
 
             self.initialized = True
 
-            await self._prefetch_metadata()
+            # Prefetch metadata in background (non-blocking, with timeout)
+            try:
+                await asyncio.wait_for(self._prefetch_metadata(), timeout=10.0)
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[GITHUB AGENT] Metadata prefetch timed out (continuing without cache)")
+                self.metadata_cache = {'repositories': {}}
+            except Exception as e:
+                if self.verbose:
+                    print(f"[GITHUB AGENT] Metadata prefetch failed: {str(e)[:100]}")
+                self.metadata_cache = {'repositories': {}}
 
             if self.verbose:
                 print(f"[GITHUB AGENT] Initialization complete. {len(self.available_tools)} tools available.")
