@@ -37,16 +37,28 @@ MarkupError: closing tag '[/bold]' doesn't match any open tag
 ### 3. **Output Suppression**
 **Fixed:** Re-enabled clean output suppression - no more noisy MCP server messages during loading
 
-### 4. **Agent Timeout Crash (Notion)**
+### 4. **Agent Timeout Crash & Cancellation Propagation**
 
-#### Issue: System Crash on Agent Timeout
+#### Issue 1: System Crash on Agent Timeout
 ```
 asyncio.exceptions.CancelledError: Cancelled via cancel scope
 RuntimeError: Attempted to exit cancel scope in a different task
 [Complete system crash]
 ```
 
-**Fixed:** Added graceful CancelledError handling in timeout wrapper. When an agent times out (like Notion without credentials), the system now gracefully skips it and continues loading other agents instead of crashing.
+#### Issue 2: Cancellation Cascade Effect
+When one agent (e.g., Notion) timed out, the cancellation would cascade to:
+- Subsequent agents getting cancelled (Scraper, Code Reviewer)
+- System crashing in main.py during `asyncio.sleep(0.3)`
+- MCP async generator cleanup errors propagating
+
+**Fixed:** Implemented task-based isolation using `asyncio.create_task()`:
+- Each agent loads in an isolated task (no cancellation propagation)
+- Uses `asyncio.wait()` instead of `wait_for()` for better control
+- Explicitly cancels timed-out tasks and suppresses all cleanup errors
+- Defensive CancelledError handling prevents any escape
+
+**Result:** Agent timeouts are now fully isolated - other agents continue loading normally.
 
 ---
 
@@ -288,7 +300,8 @@ You now have a production-ready multi-agent orchestration system with:
 4. ✅ UI markup errors fixed
 5. ✅ Output suppression restored
 6. ✅ Comprehensive logging added
-7. ✅ Agent timeout crash fixed (CancelledError handling)
+7. ✅ Agent timeout crash fixed (task-based isolation)
+8. ✅ Cancellation propagation prevented (no cascade effect)
 
 **The system is ready for production use!** 🚀
 

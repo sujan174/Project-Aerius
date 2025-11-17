@@ -560,6 +560,7 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             print(f"Disabled agents: {', '.join(disabled_agents)}")
 
         # Wrap each agent load with a timeout to prevent hanging
+        # Uses task-based isolation to prevent cancellation propagation
         async def load_with_timeout(file_path):
             agent_name = file_path.stem.replace("_agent", "")
 
@@ -568,25 +569,43 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                 print(f"⊘ {agent_name}: Disabled via DISABLED_AGENTS env var", flush=True)
                 return (agent_name, None, None, [f"  ⊘ {agent_name} disabled by user configuration"])
 
-            agent_instance = None
+            # Create isolated task for this agent to prevent cancellation propagation
+            task = asyncio.create_task(self._load_single_agent(file_path))
+
             try:
-                return await asyncio.wait_for(
-                    self._load_single_agent(file_path),
-                    timeout=10.0  # 10 second timeout per agent
-                )
-            except asyncio.TimeoutError:
-                print(f"✗ {agent_name}: Timed out after 10s", flush=True)
-                print(f"  Hint: Agent may be waiting for credentials or network connection", flush=True)
-                print(f"  Hint: Add DISABLED_AGENTS={agent_name} to .env to skip this agent", flush=True)
-                return (agent_name, None, None, [f"  ✗ {agent_name} initialization timed out"])
-            except asyncio.CancelledError:
-                # Handle cancellation gracefully to prevent crash
-                print(f"✗ {agent_name}: Cancelled", flush=True)
-                return (agent_name, None, None, [f"  ✗ {agent_name} was cancelled"])
+                # Wait for task with timeout using asyncio.wait (not wait_for)
+                # This gives us more control over cancellation
+                done, pending = await asyncio.wait([task], timeout=10.0)
+
+                if task in done:
+                    # Task completed - return result or handle exception
+                    try:
+                        return task.result()
+                    except Exception as e:
+                        print(f"✗ {agent_name}: Failed - {type(e).__name__}", flush=True)
+                        if self.verbose:
+                            print(f"  Details: {str(e)[:200]}", flush=True)
+                        return (agent_name, None, None, [f"  ✗ {agent_name} failed: {e}"])
+                else:
+                    # Timeout - cancel task and handle cleanup
+                    print(f"✗ {agent_name}: Timed out after 10s", flush=True)
+                    print(f"  Hint: Agent may be waiting for credentials or network connection", flush=True)
+                    print(f"  Hint: Add DISABLED_AGENTS={agent_name} to .env to skip this agent", flush=True)
+
+                    # Cancel the task
+                    task.cancel()
+
+                    # Wait for cancellation to complete, suppressing all errors
+                    # This prevents MCP cleanup errors from propagating
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass  # Suppress all cleanup errors
+
+                    return (agent_name, None, None, [f"  ✗ {agent_name} initialization timed out"])
             except Exception as e:
+                # Should not reach here, but handle anyway
                 print(f"✗ {agent_name}: Unexpected error - {type(e).__name__}", flush=True)
-                if self.verbose:
-                    print(f"  Details: {str(e)[:200]}", flush=True)
                 return (agent_name, None, None, [f"  ✗ {agent_name} failed: {e}"])
 
         print(f"\nLoading {len(connector_files)} agents sequentially (for stability)...", flush=True)
@@ -603,6 +622,12 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             try:
                 result = await load_with_timeout(f)
                 results.append(result)
+            except asyncio.CancelledError:
+                # Should never reach here due to task isolation, but handle defensively
+                agent_name = f.stem.replace("_agent", "")
+                print(f"✗ {agent_name}: Cancelled (isolated)", flush=True)
+                results.append((agent_name, None, None, [f"✗ {agent_name} was cancelled"]))
+                # DO NOT re-raise - suppress to prevent propagation
             except Exception as e:
                 agent_name = f.stem.replace("_agent", "")
                 print(f"✗ {agent_name}: Exception during load - {type(e).__name__}", flush=True)
