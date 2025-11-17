@@ -483,6 +483,29 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
 
                 return (agent_name, agent_instance, capabilities, messages)
 
+            except asyncio.CancelledError:
+                # Agent initialization was cancelled (likely by previous agent's MCP cleanup)
+                # Treat as initialization failure but don't propagate cancellation
+                short_msg = "Initialization cancelled"
+                detailed_msg = "Agent initialization was cancelled, possibly due to previous agent cleanup.\nThis is usually temporary."
+
+                print(f"✗ {agent_name}: {short_msg}", flush=True)
+                if self.verbose:
+                    print(f"  {detailed_msg}", flush=True)
+
+                messages.append(f"  ✗ Failed to initialize {agent_name}: {short_msg}")
+
+                try:
+                    if hasattr(agent_instance, 'cleanup'):
+                        await agent_instance.cleanup()
+                except Exception:
+                    pass
+
+                # Give background tasks time to finish before next agent
+                # Use synchronous sleep since we're in a cancelled context
+                time.sleep(0.5)
+                return (agent_name, None, None, messages)
+
             except Exception as init_error:
                 # Use centralized error handler for user-friendly messages
                 short_msg, detailed_msg = AgentErrorHandler.handle_initialization_error(
@@ -578,6 +601,19 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                         'error_count': 1,
                         'error_message': 'Failed to initialize'
                     }
+
+                # Small delay between agents to allow MCP background tasks to finish cleanup
+                # This prevents one agent's cleanup from interfering with the next agent's initialization
+                import time
+                time.sleep(0.2)
+
+            except asyncio.CancelledError:
+                # Catch cancellation at top level too, just in case
+                agent_name = file_path.stem.replace("_agent", "")
+                print(f"✗ {agent_name}: Initialization cancelled", flush=True)
+                # Don't propagate - continue loading other agents
+                import time
+                time.sleep(0.5)
 
             except Exception as e:
                 agent_name = file_path.stem.replace("_agent", "")
