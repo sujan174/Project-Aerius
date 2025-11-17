@@ -138,9 +138,9 @@ class OrchestratorAgent:
         )
 
 
-        user_id = os.environ.get("USER_ID", "default")
+        # User preferences - session-based, not user-based
         self.user_prefs = UserPreferenceManager(
-            user_id=user_id,
+            user_id=self.session_id,  # Use session_id instead of USER_ID
             min_confidence_threshold=0.7,
             verbose=self.verbose
         )
@@ -175,7 +175,7 @@ class OrchestratorAgent:
                 print(f"⚠ Hybrid cache initialization failed, using basic cache: {e}")
             self.hybrid_cache = None
 
-        self.prefs_file = Path(f"data/preferences/{user_id}.json")
+        self.prefs_file = Path(f"data/preferences/{self.session_id}.json")
         self.prefs_file.parent.mkdir(parents=True, exist_ok=True)
         if self.prefs_file.exists():
             try:
@@ -966,6 +966,12 @@ Provide a concise summary that gives the user exactly what they need to know."""
         # Get conversation context
         context_dict = self.context_manager.get_relevant_context(user_message)
 
+        # Log context retrieval
+        self.session_logger.log_system_event('context_retrieved', {
+            'message_preview': user_message[:100],
+            'context_keys': list(context_dict.keys())
+        })
+
         # Hybrid intelligence with timeout protection
         try:
             hybrid_result = await asyncio.wait_for(
@@ -1007,6 +1013,16 @@ Provide a concise summary that gives the user exactly what they need to know."""
         intents = hybrid_result.intents
         entities = hybrid_result.entities
 
+        # Log intelligence classification
+        self.session_logger.log_intelligence_classification(
+            path_used=hybrid_result.path_used,
+            latency_ms=hybrid_result.latency_ms,
+            confidence=hybrid_result.confidence,
+            intents=intents,
+            entities=entities,
+            reasoning=getattr(hybrid_result, 'reasoning', None)
+        )
+
         if self.verbose:
             print(f"[HYBRID] Path: {hybrid_result.path_used}, "
                   f"Latency: {hybrid_result.latency_ms:.1f}ms, "
@@ -1018,6 +1034,19 @@ Provide a concise summary that gives the user exactly what they need to know."""
             entities=entities
         )
 
+        # Log confidence scoring details
+        self.session_logger.log_confidence_scoring(
+            overall_score=confidence.score,
+            intent_clarity=getattr(confidence, 'intent_clarity', 0.0),
+            entity_clarity=getattr(confidence, 'entity_clarity', 0.0),
+            ambiguity=getattr(confidence, 'ambiguity', 0.0),
+            recommendation=confidence.level.value if hasattr(confidence, 'level') else 'unknown',
+            details={
+                'factors': getattr(confidence, 'factors', {}),
+                'explanation': str(confidence)
+            }
+        )
+
         self.context_manager.add_turn(
             role='user',
             message=user_message,
@@ -1027,12 +1056,22 @@ Provide a concise summary that gives the user exactly what they need to know."""
 
         resolved_message = user_message
 
+        # Log context resolutions
+        resolutions = []
         if self.verbose:
             for word in user_message.split():
                 resolution = self.context_manager.resolve_reference(word)
                 if resolution:
                     entity_id, entity = resolution
                     print(f"[INTELLIGENCE] Can resolve '{word}' → {entity.value}")
+                    resolutions.append({
+                        'reference': word,
+                        'resolved_to': entity.value,
+                        'entity_id': entity_id
+                    })
+
+        if resolutions:
+            self.session_logger.log_context_resolution(resolutions)
 
         # Get primary intent (highest confidence)
         primary_intent = intents[0] if intents else None
@@ -1070,6 +1109,14 @@ Provide a concise summary that gives the user exactly what they need to know."""
             action_recommendation = ('confirm', confirmation_reason)
         else:
             action_recommendation = (base_action, base_explanation)
+
+        # Log risk assessment
+        self.session_logger.log_risk_assessment(
+            risk_level=risk_level.value if hasattr(risk_level, 'value') else str(risk_level),
+            needs_confirmation=needs_confirmation,
+            reason=confirmation_reason if needs_confirmation else base_explanation,
+            intents=[str(i) for i in intents]
+        )
 
         intelligence = {
             'intents': intents,
@@ -1645,5 +1692,7 @@ Provide a concise summary that gives the user exactly what they need to know."""
         if hasattr(self, 'session_logger'):
             self.session_logger.close()
             if self.verbose:
-                print(f"  ✓ Session log saved: {self.session_logger.get_log_path()}")
+                print(f"  ✓ Session logs saved:")
+                print(f"    - Text: {self.session_logger.get_log_path()}")
+                print(f"    - JSON: {self.session_logger.get_json_log_path()}")
 
