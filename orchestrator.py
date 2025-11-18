@@ -1308,7 +1308,14 @@ Provide a concise summary that gives the user exactly what they need to know."""
 
         send_task = asyncio.create_task(self.chat.send_message(message_to_send))
         await self._spinner(send_task, "Thinking")
-        llm_response = send_task.result()
+        try:
+            llm_response = send_task.result()
+        except asyncio.CancelledError:
+            # Task was cancelled - try to get exception or raise
+            if not send_task.cancelled():
+                llm_response = send_task.result()  # Get the actual exception
+            else:
+                raise  # Re-raise cancellation
 
         response = self._safe_get_response_object(llm_response)
 
@@ -1359,7 +1366,13 @@ Provide a concise summary that gives the user exactly what they need to know."""
                         self.chat.send_message_with_functions("", function_result)
                     )
                     await self._spinner(response_task, "Synthesizing results")
-                    llm_response = response_task.result()
+                    try:
+                        llm_response = response_task.result()
+                    except asyncio.CancelledError:
+                        if not response_task.cancelled():
+                            llm_response = response_task.result()
+                        else:
+                            raise
                     response = llm_response.metadata.get('response_object') if llm_response.metadata else None
                     iteration += 1
                     continue
@@ -1389,7 +1402,13 @@ Provide a concise summary that gives the user exactly what they need to know."""
                         self._spinner(agent_task, spinner_msg),
                         timeout=120.0
                     )
-                    result = agent_task.result()
+                    try:
+                        result = agent_task.result()
+                    except asyncio.CancelledError:
+                        if not agent_task.cancelled():
+                            result = agent_task.result()
+                        else:
+                            raise
 
                     if self.verbose:
                         print(f"✓ {agent_name} completed")
@@ -1496,7 +1515,13 @@ Provide a concise summary that gives the user exactly what they need to know."""
                     self.chat.send_message_with_functions("", function_result)
                 )
                 await self._spinner(response_task, "Synthesizing results")
-                llm_response = response_task.result()
+                try:
+                    llm_response = response_task.result()
+                except asyncio.CancelledError:
+                    if not response_task.cancelled():
+                        llm_response = response_task.result()
+                    else:
+                        raise
 
                 response = llm_response.metadata.get('response_object') if llm_response.metadata else None
 
