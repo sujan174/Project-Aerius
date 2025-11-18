@@ -181,16 +181,45 @@ async def main():
             print(f"\n[MAIN] Agent loading complete")
             print(f"[MAIN] Background tasks after agent loading: {len(all_tasks)}")
 
-        # CRITICAL: Cleanup of background tasks with proper await
-        # Protected by error handling to prevent cancellation from affecting cleanup
+        # CRITICAL: Aggressively cleanup ALL background tasks before interactive session
+        # This is essential to prevent zombie tasks (like Task-22 async_generator_athrow)
+        # from interfering with message processing
         if verbose:
-            print("[MAIN] Cleaning up background tasks from agent initialization...\n")
+            print("[MAIN] Aggressively cleaning up background tasks from agent initialization...\n")
 
-        try:
-            await _async_cleanup_background_tasks(verbose)
-        except Exception as e:
+        # Do multiple cleanup passes to ensure all tasks are terminated
+        for cleanup_pass in range(3):
             if verbose:
-                print(f"[MAIN] Cleanup exception: {e}, continuing anyway")
+                print(f"[MAIN] Cleanup pass {cleanup_pass + 1}/3")
+
+            try:
+                await _async_cleanup_background_tasks(verbose)
+            except Exception as e:
+                if verbose:
+                    print(f"[MAIN] Cleanup exception: {e}, continuing anyway")
+
+            # Wait a bit for tasks to fully terminate
+            import time
+            time.sleep(0.3)
+
+            # Check if any tasks remain
+            current_task = asyncio.current_task()
+            remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+            if not remaining:
+                if verbose:
+                    print(f"[MAIN] ✓ All background tasks cleaned up after pass {cleanup_pass + 1}\n")
+                break
+            elif verbose:
+                print(f"[MAIN] {len(remaining)} tasks still active, continuing cleanup...\n")
+
+        # Final verification
+        current_task = asyncio.current_task()
+        final_remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+        if final_remaining and verbose:
+            print(f"[MAIN] ⚠️  WARNING: {len(final_remaining)} background tasks still active after cleanup")
+            for i, task in enumerate(final_remaining, 1):
+                print(f"[MAIN]   Task {i}: {task.get_name()}")
+            print()
 
         # Display loaded agents
         loaded_agents = []
@@ -429,17 +458,69 @@ async def process_with_ui(
     orchestrator.call_sub_agent = wrapped_call_sub_agent
 
     try:
-        # DO NOT cleanup background tasks before processing!
-        # This causes cancellation cascades where background tasks cancel the main processing task
-        # Background tasks from agent initialization should remain until session end
+        # Check for dangerous background tasks before processing
+        # If zombie tasks exist (like async_generator_athrow), we need to clean them up
+        current_task = asyncio.current_task()
+        background_tasks = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+
         if ui.verbose:
             print(f"\n[PROCESS] Starting message processing: '{user_message[:50]}...'")
-            current_task = asyncio.current_task()
-            all_tasks = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
-            print(f"[PROCESS] Active background tasks: {len(all_tasks)}")
-            if all_tasks:
-                for i, task in enumerate(all_tasks[:5], 1):  # Show first 5
-                    print(f"[PROCESS]   Task {i}: {task.get_name()}")
+            print(f"[PROCESS] Active background tasks: {len(background_tasks)}")
+            if background_tasks:
+                for i, task in enumerate(background_tasks[:5], 1):  # Show first 5
+                    coro_name = "unknown"
+                    try:
+                        if hasattr(task, 'get_coro'):
+                            coro = task.get_coro()
+                            coro_name = f"{coro.__name__}" if hasattr(coro, '__name__') else str(coro)
+                        elif hasattr(task, '_coro'):
+                            coro_name = str(task._coro)
+                    except:
+                        pass
+                    print(f"[PROCESS]   Task {i}: {task.get_name()} | Coro: {coro_name}")
+
+        # If dangerous tasks detected (async generators), clean them up BEFORE processing
+        if background_tasks:
+            dangerous_tasks = []
+            for task in background_tasks:
+                task_name = task.get_name()
+                try:
+                    if hasattr(task, 'get_coro'):
+                        coro = task.get_coro()
+                        coro_str = str(coro)
+                        if 'async_generator' in coro_str.lower():
+                            dangerous_tasks.append(task)
+                except:
+                    pass
+
+            if dangerous_tasks:
+                if ui.verbose:
+                    print(f"[PROCESS] ⚠️  Detected {len(dangerous_tasks)} dangerous async generator tasks")
+                    print(f"[PROCESS] Cleaning them up before processing to prevent cancellation...")
+
+                # Aggressively cancel and wait for these tasks
+                for task in dangerous_tasks:
+                    task.cancel()
+
+                # Wait for them to finish with a short timeout
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*dangerous_tasks, return_exceptions=True),
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    if ui.verbose:
+                        print(f"[PROCESS] Dangerous task cleanup timed out, proceeding anyway")
+                except Exception as e:
+                    if ui.verbose:
+                        print(f"[PROCESS] Cleanup error: {e}, proceeding anyway")
+
+                # Small delay for event loop cleanup
+                import time
+                time.sleep(0.1)
+
+                if ui.verbose:
+                    print(f"[PROCESS] Cleanup complete, proceeding with processing\n")
 
         # Create the processing task with protection from cancellation
         # Use shield to protect from external cancellations by background tasks
