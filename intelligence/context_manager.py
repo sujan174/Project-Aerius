@@ -146,10 +146,14 @@ class ConversationContextManager:
         Get relevant context for current message
 
         Returns:
-            Dictionary with relevant context information
+            Dictionary with relevant context information (JSON-serializable)
         """
+        # Convert recent turns to JSON-serializable dicts
+        recent_turns = self.get_recent_turns(3)
+        recent_turns_dict = [turn.to_dict() for turn in recent_turns]
+
         context = {
-            'recent_turns': self.get_recent_turns(3),
+            'recent_turns': recent_turns_dict,  # Now JSON-serializable
             'current_project': self.current_project,
             'current_repository': self.current_repository,
             'focused_entities': self._get_focused_entities(),
@@ -227,7 +231,7 @@ class ConversationContextManager:
                 self.current_repository = entity.value
 
     def _get_focused_entities(self) -> List[Dict]:
-        """Get currently focused entities with details"""
+        """Get currently focused entities with details (JSON-serializable)"""
         focused = []
 
         for entity_id in reversed(self.focused_entities[-5:]):  # Last 5 focused
@@ -240,7 +244,7 @@ class ConversationContextManager:
                         'type': tracked.entity.type.value,
                         'value': tracked.entity.value,
                         'mentions': tracked.mention_count,
-                        'last_seen': tracked.last_referenced
+                        'last_seen': tracked.last_referenced.isoformat() if tracked.last_referenced else None  # Convert datetime to ISO string
                     })
 
         return focused

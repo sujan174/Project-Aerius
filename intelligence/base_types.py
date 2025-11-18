@@ -262,6 +262,17 @@ class ConversationTurn:
     entities: List[Entity] = field(default_factory=list)
     tasks_executed: List[str] = field(default_factory=list)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            'role': self.role,
+            'message': self.message,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'intents': [str(i) for i in self.intents],
+            'entities': [str(e) for e in self.entities],
+            'tasks_executed': self.tasks_executed
+        }
+
 
 @dataclass
 class TrackedEntity:
