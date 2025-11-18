@@ -390,12 +390,14 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         """
         Aggressively cancel and await all pending background tasks from failed MCP agents.
 
-        When MCP agents fail, they leave background tasks that keep
+        When MCP agents fail, they leave background tasks (especially async generators) that keep
         raising CancelledError. We need to properly cancel and AWAIT them
         to ensure they're fully terminated before proceeding.
 
         This function must be robust against being cancelled itself by rogue tasks.
         """
+        import time
+
         # Get all tasks except the current one
         current_task = asyncio.current_task()
         all_tasks = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
@@ -404,48 +406,98 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             if self.verbose:
                 print(f"[ORCHESTRATOR] Found {len(all_tasks)} background tasks, cleaning up...")
 
+                # Identify async generator tasks specifically
+                async_gen_tasks = []
+                for task in all_tasks:
+                    try:
+                        if hasattr(task, 'get_coro'):
+                            coro = task.get_coro()
+                            coro_str = str(coro)
+                            if 'async_generator' in coro_str.lower():
+                                async_gen_tasks.append(task)
+                                print(f"[ORCHESTRATOR]   Dangerous async_generator task: {task.get_name()}")
+                    except:
+                        pass
+
+                if async_gen_tasks:
+                    print(f"[ORCHESTRATOR] ⚠️  {len(async_gen_tasks)} async generator tasks detected - these can cause cancellation issues")
+
             # Cancel all background tasks
             for task in all_tasks:
                 if not task.done():
-                    task.cancel()
+                    try:
+                        task.cancel()
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[ORCHESTRATOR] Failed to cancel {task.get_name()}: {e}")
 
-            # Actually WAIT for them to finish cancellation
-            # Wrap in try/except because the cleanup itself can be cancelled by rogue tasks
-            # We MUST complete this cleanup even if we're being cancelled
+            # Wait for tasks to terminate with multiple fallback strategies
             try:
-                # Use shield to protect the gather from external cancellations
-                await asyncio.shield(asyncio.gather(*all_tasks, return_exceptions=True))
+                # Strategy 1: Shield + timeout
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(*all_tasks, return_exceptions=True)),
+                    timeout=2.0
+                )
+                if self.verbose:
+                    print(f"[ORCHESTRATOR] All background tasks cleaned up successfully")
+            except asyncio.TimeoutError:
+                if self.verbose:
+                    print(f"[ORCHESTRATOR] Cleanup timed out, using fallback")
+                time.sleep(1.0)
             except asyncio.CancelledError:
-                # Even with shield, we might get cancelled
-                # Force wait without shield as last resort
+                # Strategy 2: Try without shield
+                if self.verbose:
+                    print(f"[ORCHESTRATOR] Shield cancelled, trying without shield")
                 try:
-                    await asyncio.gather(*all_tasks, return_exceptions=True)
-                except asyncio.CancelledError:
-                    # If we STILL get cancelled, just wait synchronously with a timeout
-                    import time
+                    await asyncio.wait_for(
+                        asyncio.gather(*all_tasks, return_exceptions=True),
+                        timeout=1.0
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    # Strategy 3: Sync fallback
                     if self.verbose:
-                        print(f"[ORCHESTRATOR] WARNING: Cleanup was cancelled, using fallback sync wait")
-                    time.sleep(2.0)  # Give tasks time to die
-
-            if self.verbose:
-                print(f"[ORCHESTRATOR] All background tasks cleaned up")
+                        print(f"[ORCHESTRATOR] Async cleanup failed, using sync fallback")
+                    time.sleep(1.5)
+            except Exception as e:
+                if self.verbose:
+                    print(f"[ORCHESTRATOR] Cleanup error: {e}, using sync fallback")
+                time.sleep(1.0)
 
         # Extra verification: check if any new tasks appeared during cleanup
-        current_task = asyncio.current_task()
-        remaining_tasks = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+        # Do up to 2 more cleanup passes if tasks remain
+        for cleanup_pass in range(2):
+            current_task = asyncio.current_task()
+            remaining_tasks = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
 
-        if remaining_tasks:
+            if not remaining_tasks:
+                break
+
             if self.verbose:
-                print(f"[ORCHESTRATOR] WARNING: {len(remaining_tasks)} tasks still remain after cleanup")
-            # One more aggressive cleanup round
+                print(f"[ORCHESTRATOR] Cleanup pass {cleanup_pass + 2}: {len(remaining_tasks)} tasks still remain")
+
+            # Cancel remaining tasks
             for task in remaining_tasks:
-                task.cancel()
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+
+            # Quick wait
             try:
-                await asyncio.gather(*remaining_tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                # Absorb cancellation - we've done our best
-                if self.verbose:
-                    print(f"[ORCHESTRATOR] Second cleanup round cancelled, continuing anyway")
+                await asyncio.wait_for(
+                    asyncio.gather(*remaining_tasks, return_exceptions=True),
+                    timeout=1.0
+                )
+            except Exception:
+                time.sleep(0.5)
+
+        if self.verbose:
+            current_task = asyncio.current_task()
+            final_remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+            if final_remaining:
+                print(f"[ORCHESTRATOR] ⚠️  WARNING: {len(final_remaining)} tasks still active after all cleanup passes")
+            else:
+                print(f"[ORCHESTRATOR] ✓ All background tasks successfully terminated")
 
     async def _spinner(self, task: asyncio.Task, message: str):
         """Simple wrapper for tasks - just awaits the task"""
