@@ -46,6 +46,16 @@ class Intent:
     def __str__(self) -> str:
         return f"{self.type.value}({self.confidence:.2f})"
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            'type': self.type.value,
+            'confidence': self.confidence,
+            'entities': [e.to_dict() if hasattr(e, 'to_dict') else str(e) for e in self.entities],
+            'implicit_requirements': self.implicit_requirements,
+            'raw_indicators': self.raw_indicators
+        }
+
 
 # ============================================================================
 # ENTITY TYPES
@@ -82,6 +92,17 @@ class Entity:
 
     def __str__(self) -> str:
         return f"{self.type.value}:{self.value}({self.confidence:.2f})"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            'type': self.type.value,
+            'value': self.value,
+            'confidence': self.confidence,
+            'context': self.context,
+            'normalized_value': self.normalized_value,
+            'metadata': self.metadata
+        }
 
 
 # ============================================================================
@@ -235,6 +256,16 @@ class Confidence:
     def should_proceed(self) -> bool:
         """Should proceed without asking questions?"""
         return self.score > 0.8
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            'score': self.score,
+            'level': self.level.value,
+            'factors': self.factors,
+            'uncertainties': self.uncertainties,
+            'assumptions': self.assumptions
+        }
 
     def should_confirm(self) -> bool:
         """Should confirm with user?"""

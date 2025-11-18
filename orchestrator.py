@@ -1177,20 +1177,24 @@ Provide a clear instruction describing what you want to accomplish.""",
         # ===================================================================
         # UNIFIED SESSION LOGGING - Log intelligence status
         # ===================================================================
+        # Extract confidence score properly (it's a Confidence object)
+        confidence_obj = intelligence.get('confidence')
+        confidence_score = confidence_obj.score if hasattr(confidence_obj, 'score') else 0.0
+
         self.unified_logger.log_intelligence_status(
             intelligence_result={
-                'path_used': intelligence.get('path_used', 'unknown'),
-                'latency_ms': intelligence.get('latency_ms', 0),
+                'path_used': intelligence.get('hybrid_path_used', 'unknown'),
+                'latency_ms': intelligence.get('hybrid_latency_ms', 0),
                 'intents': [str(i) for i in intelligence.get('intents', [])],
                 'entities': [
                     {
-                        'type': str(e.entity_type) if hasattr(e, 'entity_type') else 'unknown',
+                        'type': str(e.type.value) if hasattr(e, 'type') else 'unknown',
                         'value': str(e.value) if hasattr(e, 'value') else str(e),
                         'confidence': float(e.confidence) if hasattr(e, 'confidence') else 0.0
                     } for e in intelligence.get('entities', [])
                 ],
-                'confidence': intelligence.get('confidence', 0.0),
-                'reasoning': intelligence.get('reasoning', ''),
+                'confidence': confidence_score,
+                'reasoning': intelligence.get('hybrid_reasoning', ''),
                 'ambiguities': intelligence.get('ambiguities', []),
                 'suggested_clarifications': intelligence.get('suggested_clarifications', [])
             },
