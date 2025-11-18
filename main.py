@@ -56,13 +56,41 @@ async def main():
         # MCP servers will output to stderr during initialization (suppressed)
         await orchestrator.discover_and_load_agents()
 
-        # Verify that all background tasks have been cleaned up
+        # CRITICAL: Extra cleanup and settling time after agent initialization
+        # Failed agents (especially MCP-based ones) can leave async generators and
+        # background tasks that take time to fully terminate
         if verbose:
+            print("[MAIN] Allowing background tasks to settle...")
+
+        # Give tasks time to settle
+        await asyncio.sleep(1.0)
+
+        # Perform aggressive cleanup of any remaining tasks
+        current_task = asyncio.current_task()
+        remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+        if remaining:
+            if verbose:
+                print(f"[MAIN] Cleaning up {len(remaining)} remaining background tasks...")
+            for task in remaining:
+                task.cancel()
+            try:
+                # Wait for all tasks to fully terminate
+                await asyncio.gather(*remaining, return_exceptions=True)
+            except Exception:
+                pass  # Absorb all errors
+
+            # Final verification
+            await asyncio.sleep(0.5)
             current_task = asyncio.current_task()
-            remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
-            if remaining:
-                print(f"[MAIN] WARNING: {len(remaining)} background tasks still active after agent loading")
+            final_remaining = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+            if final_remaining:
+                if verbose:
+                    print(f"[MAIN] WARNING: {len(final_remaining)} tasks still active after cleanup")
             else:
+                if verbose:
+                    print(f"[MAIN] All background tasks cleaned up successfully")
+        else:
+            if verbose:
                 print(f"[MAIN] All background tasks cleaned up successfully")
 
         # Display loaded agents
@@ -283,12 +311,23 @@ async def process_with_ui(
                 except Exception:
                     pass  # Absorb any other errors
 
+                # Give a moment for tasks to fully terminate
+                await asyncio.sleep(0.2)
+
             # Create the processing task
             processing_task = asyncio.create_task(orchestrator.process_message(user_message))
 
-            # Shield it from external cancellations
-            response = await asyncio.shield(processing_task)
-            return response
+            # Use a timeout wrapper to prevent indefinite hangs from rogue tasks
+            try:
+                response = await asyncio.wait_for(processing_task, timeout=300.0)  # 5 minute timeout
+                return response
+            except asyncio.TimeoutError:
+                processing_task.cancel()
+                try:
+                    await processing_task
+                except asyncio.CancelledError:
+                    pass
+                return "⚠️ Operation timed out after 5 minutes. Please try a simpler request."
 
         except asyncio.CancelledError:
             # This should rarely happen with shield, but if it does, it means
