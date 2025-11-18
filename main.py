@@ -527,10 +527,34 @@ async def process_with_ui(
         if ui.verbose:
             print(f"[PROCESS] Creating protected processing task...")
 
+        # CRITICAL: Wrapper to isolate anyio operations from asyncio event loop
+        # This prevents anyio cancel scopes from escaping and cancelling the shield
+        async def isolated_process():
+            """Wrapper that isolates anyio cancel scopes within this task boundary"""
+            try:
+                return await orchestrator.process_message(user_message)
+            except RuntimeError as e:
+                # Catch "cancel scope in different task" errors from anyio
+                error_str = str(e).lower()
+                if "cancel scope" in error_str or "different task" in error_str:
+                    if ui.verbose:
+                        print(f"[PROCESS] ⚠️ anyio cancel scope error detected: {e}")
+                        print(f"[PROCESS] Reinitializing agent connections...")
+                    # Reinitialize all MCP agents to clear corrupted state
+                    for agent_name, agent in orchestrator.sub_agents.items():
+                        try:
+                            if hasattr(agent, 'cleanup') and hasattr(agent, 'initialize'):
+                                await agent.cleanup()
+                                await agent.initialize()
+                        except:
+                            pass
+                    raise RuntimeError("Agent connection error. Please try again.") from e
+                raise
+
         # Process with timeout and cancellation protection
         try:
             # Shield the processing from external cancellations
-            processing_task = asyncio.create_task(orchestrator.process_message(user_message))
+            processing_task = asyncio.create_task(isolated_process())
 
             if ui.verbose:
                 print(f"[PROCESS] Processing task created: {processing_task.get_name()}")
