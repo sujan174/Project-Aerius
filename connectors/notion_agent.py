@@ -572,20 +572,33 @@ Remember: You're not just executing commands—you're helping users build a powe
                     env=env_vars
                 )
 
-                # CRITICAL: Isolate MCP stdio context initialization to prevent Task-22
-                # (async_generator_athrow) from cancelling parent tasks.
-                # The anyio library spawns Task-22 during __aenter__() which can
-                # cancel scopes in different tasks, bypassing asyncio.shield().
+                # Simple direct initialization - matches reference working code pattern
                 try:
-                    # Use a dedicated task to isolate anyio's task spawning
-                    init_result = await self._isolated_mcp_init(server_params, connection_timeout)
-
-                    if init_result is None:
-                        raise RuntimeError("MCP initialization failed")
-
-                    # Unpack the result
+                    # Connect to MCP server (simple pattern from reference)
+                    self.stdio_context = stdio_client(server_params)
+                    stdio, write = await asyncio.wait_for(
+                        self.stdio_context.__aenter__(),
+                        timeout=connection_timeout
+                    )
                     self.stdio_context_entered = True
+
+                    self.session = ClientSession(stdio, write)
+                    await asyncio.wait_for(
+                        self.session.__aenter__(),
+                        timeout=10.0
+                    )
                     self.session_entered = True
+
+                    await asyncio.wait_for(
+                        self.session.initialize(),
+                        timeout=10.0
+                    )
+
+                    tools_list = await asyncio.wait_for(
+                        self.session.list_tools(),
+                        timeout=10.0
+                    )
+                    self.available_tools = tools_list.tools
 
                 except asyncio.CancelledError:
                     # Handle cancellation gracefully (from timeout or external cancel)
@@ -666,10 +679,6 @@ Remember: You're not just executing commands—you're helping users build a powe
                     if self.verbose:
                         print(f"[NOTION AGENT] Metadata prefetch failed: {str(e)[:100]}")
                     self.metadata_cache = {'databases': {}, 'pages': {}}
-
-                # CRITICAL: Clean up any Task-22 async_generator_athrow tasks spawned during init
-                # These tasks can bypass asyncio.shield() and cancel parent scopes
-                await self._cleanup_dangerous_tasks()
 
                 if self.verbose:
                     print(f"[NOTION AGENT] Initialization complete. {len(self.available_tools)} tools available.")
@@ -1366,136 +1375,6 @@ Remember: You're not just executing commands—you're helping users build a powe
     # ========================================================================
     # CLEANUP AND RESOURCE MANAGEMENT
     # ========================================================================
-
-    async def _cleanup_dangerous_tasks(self):
-        """
-        Clean up any async_generator_athrow tasks (like Task-22) that may have been
-        spawned during MCP initialization and could cause cascading cancellations.
-        """
-        current_task = asyncio.current_task()
-        dangerous_tasks = []
-
-        for task in asyncio.all_tasks():
-            if task is current_task or task.done():
-                continue
-
-            task_name = task.get_name()
-            try:
-                if hasattr(task, 'get_coro'):
-                    coro = task.get_coro()
-                    coro_str = str(coro)
-                    # Look for async_generator_athrow or other dangerous patterns
-                    if 'async_generator' in coro_str.lower() or 'athrow' in coro_str.lower():
-                        dangerous_tasks.append(task)
-                        if self.verbose:
-                            print(f"[NOTION AGENT] Found dangerous task: {task_name} | Coro: {coro_str[:80]}")
-            except:
-                pass
-
-        if dangerous_tasks:
-            if self.verbose:
-                print(f"[NOTION AGENT] Cleaning up {len(dangerous_tasks)} dangerous task(s)...")
-
-            # Cancel all dangerous tasks
-            for task in dangerous_tasks:
-                task.cancel()
-
-            # Wait for them to finish with short timeout
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*dangerous_tasks, return_exceptions=True),
-                    timeout=1.0
-                )
-            except asyncio.TimeoutError:
-                if self.verbose:
-                    print(f"[NOTION AGENT] Task cleanup timed out, proceeding anyway")
-            except Exception:
-                pass  # Suppress all cleanup errors
-
-            # Small delay for event loop cleanup
-            await asyncio.sleep(0.05)
-
-            if self.verbose:
-                print(f"[NOTION AGENT] Dangerous task cleanup complete")
-
-    async def _isolated_mcp_init(self, server_params, connection_timeout):
-        """
-        Initialize MCP connection in an isolated task to prevent Task-22
-        from cancelling parent tasks.
-
-        This wrapper protects against the async_generator_athrow issue where
-        anyio's internal task (Task-22) cancels scopes in different tasks,
-        bypassing asyncio.shield() protection.
-        """
-        async def _do_init():
-            """Inner function that performs the actual initialization"""
-            try:
-                self.stdio_context = stdio_client(server_params)
-                stdio, write = await self.stdio_context.__aenter__()
-
-                self.session = ClientSession(stdio, write)
-                await self.session.__aenter__()
-
-                await self.session.initialize()
-
-                tools_list = await self.session.list_tools()
-                self.available_tools = tools_list.tools
-
-                return True  # Success
-            except Exception as e:
-                # Clean up on any error
-                try:
-                    await self._cleanup_connection()
-                except:
-                    pass
-                raise e
-
-        # Run initialization in a separate task with timeout
-        # This isolates anyio's Task-22 within this task's context
-        init_task = asyncio.create_task(_do_init())
-
-        try:
-            # Wait for initialization with timeout
-            result = await asyncio.wait_for(init_task, timeout=connection_timeout)
-            return result
-        except asyncio.TimeoutError:
-            # Cancel the init task on timeout
-            init_task.cancel()
-            try:
-                await init_task
-            except (asyncio.CancelledError, RuntimeError):
-                # Suppress cancellation and "cancel scope in different task" errors
-                pass
-            except Exception:
-                pass
-            raise asyncio.TimeoutError(f"Connection timeout after {connection_timeout}s")
-        except asyncio.CancelledError:
-            # If we're cancelled, cancel the init task
-            init_task.cancel()
-            try:
-                await init_task
-            except (asyncio.CancelledError, RuntimeError):
-                # Suppress cancellation and anyio errors
-                pass
-            except Exception:
-                pass
-            raise
-        except RuntimeError as e:
-            # Handle "cancel scope in different task" errors
-            error_str = str(e).lower()
-            if "cancel scope" in error_str or "different task" in error_str:
-                # This is from Task-22 - convert to a more user-friendly error
-                init_task.cancel()
-                try:
-                    await init_task
-                except:
-                    pass
-                raise RuntimeError(
-                    f"MCP connection initialization failed due to internal task conflict. "
-                    "This can happen if the Notion MCP server is slow or unresponsive. "
-                    "Please try again."
-                )
-            raise
 
     async def _cleanup_connection(self):
         """Internal cleanup helper for MCP connection resources"""
