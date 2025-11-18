@@ -516,30 +516,3 @@ class CacheKeyBuilder:
         return f"embedding:{hash_content(text)}"
 
 
-_global_cache: Optional[IntelligentCache] = None
-
-
-def get_global_cache() -> IntelligentCache:
-    global _global_cache
-    if _global_cache is None:
-        _global_cache = IntelligentCache(
-            max_size=1000,
-            default_ttl_seconds=300,
-            verbose=False
-        )
-    return _global_cache
-
-
-def configure_global_cache(
-    max_size: int = 1000,
-    default_ttl_seconds: Optional[float] = 300,
-    verbose: bool = False
-):
-    global _global_cache
-    _global_cache = IntelligentCache(
-        max_size=max_size,
-        default_ttl_seconds=default_ttl_seconds,
-        verbose=verbose
-    )
-
-
