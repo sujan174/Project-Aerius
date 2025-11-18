@@ -51,6 +51,7 @@ from core.observability import (
 
 # Import new enhancement systems
 from core.retry_manager import RetryManager
+from core.circuit_breaker import CircuitBreaker, CircuitConfig
 from core.undo_manager import UndoManager, UndoableOperationType
 from core.user_preferences import UserPreferenceManager
 from core.analytics import AnalyticsCollector
@@ -80,7 +81,17 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 
 class OrchestratorAgent:
-    """Main orchestration agent that coordinates specialized sub-agents"""
+    """
+    Main orchestration agent that coordinates specialized sub-agents.
+
+    Features:
+    - Hybrid Intelligence System v5.0 (Fast Filter + LLM Classifier)
+    - Circuit Breaker Pattern (prevents cascading failures)
+    - Smart Retry Management (exponential backoff with jitter)
+    - Undo System (reversible operations)
+    - User Preference Learning
+    - Comprehensive Analytics & Observability
+    """
 
     @staticmethod
     def _safe_get_response_object(llm_response) -> Optional[Any]:
@@ -214,14 +225,25 @@ class OrchestratorAgent:
             verbose=self.verbose
         )
 
-        # 2. Undo Manager - Undo destructive operations
+        # 2. Circuit Breaker - Prevent cascading failures
+        self.circuit_breaker = CircuitBreaker(
+            config=CircuitConfig(
+                failure_threshold=5,        # Open circuit after 5 consecutive failures
+                success_threshold=2,        # Close circuit after 2 consecutive successes
+                timeout_seconds=300.0,      # Wait 5 minutes before testing recovery
+                half_open_timeout=10.0      # Max 10 seconds in half-open state
+            ),
+            verbose=self.verbose
+        )
+
+        # 3. Undo Manager - Undo destructive operations
         self.undo_manager = UndoManager(
             max_undo_history=20,
             default_ttl_seconds=3600,  # 1 hour
             verbose=self.verbose
         )
 
-        # 3. User Preferences - Learn from user behavior
+        # 4. User Preferences - Learn from user behavior
         user_id = os.environ.get("USER_ID", "default")
         self.user_prefs = UserPreferenceManager(
             user_id=user_id,
@@ -229,17 +251,17 @@ class OrchestratorAgent:
             verbose=self.verbose
         )
 
-        # 4. Analytics - Performance monitoring
+        # 5. Analytics - Performance monitoring
         self.analytics = AnalyticsCollector(
             session_id=self.session_id,
             max_latency_samples=1000,
             verbose=self.verbose
         )
 
-        # 5. Error Message Enhancer - Better error messages
+        # 6. Error Message Enhancer - Better error messages
         self.error_enhancer = ErrorMessageEnhancer(verbose=self.verbose)
 
-        # 6. Mandatory Confirmation - Human-in-the-loop for Slack/Notion
+        # 7. Mandatory Confirmation - Human-in-the-loop for Slack/Notion
         self.message_confirmer = MandatoryConfirmationEnforcer(verbose=self.verbose)
 
         # Load user preferences from file if exists
@@ -734,7 +756,14 @@ Provide a clear instruction describing what you want to accomplish.""",
         if agent_name not in self.sub_agents:
             return f"Error: Agent '{agent_name}' not found"
 
-        # Check agent health before calling
+        # Check circuit breaker before attempting execution
+        allowed, reason = await self.circuit_breaker.can_execute(agent_name)
+        if not allowed:
+            error_msg = f"⚠️ {reason}"
+            print(f"{C.YELLOW}{error_msg}{C.ENDC}")
+            return error_msg
+
+        # Legacy health check for initialization failures
         if agent_name in self.agent_health:
             health = self.agent_health[agent_name]
             if health['status'] == 'unavailable':
@@ -913,6 +942,10 @@ Provide a clear instruction describing what you want to accomplish.""",
                 self.agent_health[agent_name]['last_success'] = asyncio.get_event_loop().time()
                 self.agent_health[agent_name]['error_count'] = 0
 
+            # Record to circuit breaker
+            if success:
+                await self.circuit_breaker.record_success(agent_name)
+
             if self.verbose:
                 status = "✓" if success else "✗"
                 print(f"{C.GREEN if success else C.RED}{status} {agent_name} completed ({latency_ms:.0f}ms){C.ENDC}")
@@ -963,10 +996,8 @@ Provide a clear instruction describing what you want to accomplish.""",
                 self.agent_health[agent_name]['last_failure'] = asyncio.get_event_loop().time()
                 self.agent_health[agent_name]['error_message'] = enhanced_msg
 
-                # Mark as degraded if error count exceeds threshold
-                if self.agent_health[agent_name]['error_count'] >= 3:
-                    self.agent_health[agent_name]['status'] = 'degraded'
-                    print(f"{C.YELLOW}⚠️ {agent_name} agent marked as degraded after 3 failures{C.ENDC}")
+            # Record failure to circuit breaker (replaces old "degraded" logic)
+            await self.circuit_breaker.record_failure(agent_name, e)
 
             # Re-raise enhanced error for retry manager
             raise RuntimeError(enhanced_msg)
@@ -1973,6 +2004,18 @@ Provide a clear instruction describing what you want to accomplish.""",
             if stats['total_operations'] > 0:
                 print(f"{C.CYAN}  📊 Retry stats: {stats['total_operations']} ops, "
                       f"{stats['avg_retries_per_operation']:.1f} avg retries{C.ENDC}")
+
+        # Display circuit breaker statistics
+        if hasattr(self, 'circuit_breaker'):
+            cb_stats = self.circuit_breaker.get_statistics()
+            if cb_stats['total_circuits'] > 0:
+                if self.verbose or cb_stats['open_circuits'] > 0:
+                    # Always show if there are open circuits (important!)
+                    print(f"{C.CYAN}  🔌 Circuit Breaker: {cb_stats['closed_circuits']}/{cb_stats['total_circuits']} healthy{C.ENDC}")
+                    if cb_stats['open_circuits'] > 0:
+                        print(f"{C.RED}     ⚠️  {cb_stats['open_circuits']} circuit(s) OPEN (failing agents){C.ENDC}")
+                    if cb_stats['total_blocked_requests'] > 0:
+                        print(f"{C.YELLOW}     Blocked {cb_stats['total_blocked_requests']} requests (fail-fast){C.ENDC}")
 
         # Display undo statistics
         if hasattr(self, 'undo_manager') and self.verbose:
