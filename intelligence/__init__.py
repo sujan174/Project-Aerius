@@ -19,9 +19,7 @@ from .pipeline import (
 from .system import (
     ConversationContextManager,
     IntelligentCache,
-    CacheKeyBuilder,
-    get_global_cache,
-    configure_global_cache
+    CacheKeyBuilder
 )
 
 # Modern hybrid intelligence components
@@ -37,12 +35,10 @@ __all__ = [
     # Task planning (still needed)
     'TaskDecomposer',
     'ConfidenceScorer',
-    # Context management
+    # Context management (use dependency injection, not global singleton)
     'ConversationContextManager',
     'IntelligentCache',
     'CacheKeyBuilder',
-    'get_global_cache',
-    'configure_global_cache',
     # Modern hybrid intelligence
     'HybridIntelligenceSystem',
     'LLMIntentClassifier',

@@ -31,7 +31,6 @@ from core.input_validator import InputValidator
 from core.errors import ErrorClassifier, format_error_for_user, DuplicateOperationDetector, ErrorMessageEnhancer
 from core.resilience import RetryManager
 from core.user import UserPreferenceManager, AnalyticsCollector
-from core.parallel_executor import ParallelExecutor, AgentTask
 from core.circuit_breaker import CircuitBreaker, CircuitConfig, CircuitBreakerError
 from core.advanced_cache import HybridCache, APIResponseCache
 from core.simple_embeddings import create_default_embeddings
@@ -122,9 +121,6 @@ class OrchestratorAgent:
             session_id=self.session_id,
             verbose=self.verbose
         )
-
-        # Parallel executor for multi-agent workflows
-        self.parallel_executor = ParallelExecutor(verbose=self.verbose)
 
         # Circuit breaker for agent health management
         self.circuit_breaker = CircuitBreaker(
@@ -238,19 +234,26 @@ When delegating to an agent:
 - **"✓ agent completed successfully" means SUCCESS**: If you see this message, the agent accomplished the task even if there were errors during execution. Parse the agent's response for created resources (like "Created KAN-20" or "issue KAN-18").
 - **Error recovery is normal**: Agents are designed to handle errors intelligently through retry logic. Don't interpret retry attempts or interim errors as failures if the agent ultimately succeeds.
 
-# Task Execution Patterns
+# Task Execution Pattern: Sequential Only
 
-**IMPORTANT: Execute ONE agent call at a time. Complete each task fully before moving to the next.**
+**CRITICAL: Execute ONE agent call at a time. Complete each task fully before moving to the next.**
 
-**Sequential Execution**: Always execute tasks one after another:
-1. Call the first agent with clear instructions
-2. Wait for the agent to complete and analyze the result
-3. If there's a next step, call the next agent
-4. Repeat until all tasks are done
+This system uses purely sequential execution:
+1. Call one agent with clear, specific instructions
+2. Wait for the agent to complete and receive its result
+3. Analyze the result before deciding on the next action
+4. If there's a next step, call the next agent
+5. Repeat until all tasks are done
+
+**Why Sequential?**
+- Ensures reliable error handling and recovery
+- Allows proper context passing between agents
+- Provides clear, step-by-step feedback to users
+- Prevents cascading failures
 
 **Task Ordering**:
-- When tasks are independent, choose the most logical order
-- When Task B needs output from Task A, execute A first
+- When Task B needs output from Task A, always execute A first
+- When tasks are independent, choose the most user-friendly order
 - For multi-step workflows, complete each step before proceeding
 
 **Information Gathering Then Action**: For tasks requiring specific details:
@@ -258,16 +261,17 @@ When delegating to an agent:
 2. Present findings to user
 3. Then execute the action with complete information
 
-**Multi-Platform Coordination**: When working across multiple platforms:
-1. Execute tasks in logical order (consider user priority and dependencies)
-2. Maintain consistency in naming, formatting, and references
-3. Provide a unified summary that connects actions across platforms
+**Multi-Platform Workflows**: When working across multiple platforms:
+1. Execute tasks one at a time in logical order
+2. Pass context from one agent to the next as needed
+3. Maintain consistency in naming, formatting, and references
+4. Provide a unified summary that connects actions across platforms
 
 # Quality Standards
 
 - **Accuracy**: Double-check critical details like IDs, names, and specific values before executing actions
 - **Completeness**: Ensure tasks are fully completed, not just partially done
-- **Efficiency**: Execute tasks in the most logical order. Minimize unnecessary agent calls while ensuring thoroughness. Focus on completing one task at a time for maximum reliability.
+- **Efficiency**: Execute tasks in the most logical order. Complete one task at a time for maximum reliability and clear feedback.
 - **Transparency**: Keep users informed of progress, especially for multi-step operations
 - **Error Recovery**: When errors occur, explain what went wrong clearly and suggest solutions
 
@@ -1260,14 +1264,15 @@ Provide a concise summary that gives the user exactly what they need to know."""
         iteration = 0
 
         while iteration < max_iterations:
-            # Extract function calls from response - ALWAYS process ONE AT A TIME for reliability
+            # Extract function calls from response
+            # NOTE: System executes ONE agent call at a time (purely sequential)
+            # This ensures reliable error handling, proper context passing, and clear user feedback
             function_calls = self._extract_all_function_calls(response)
 
             if not function_calls:
                 break
 
-            # ALWAYS execute ONE agent call at a time for reliability
-            # Sequential execution ensures proper error handling and context management
+            # Process first function call only (sequential execution)
             if len(function_calls) >= 1:
                 fc = function_calls[0]
                 tool_name = fc['tool_name']
@@ -1548,93 +1553,6 @@ Provide a concise summary that gives the user exactly what they need to know."""
                 })
 
         return function_calls
-
-    async def _execute_agent_task(self, task: AgentTask) -> str:
-        """
-        Execute a single agent task. Used by ParallelExecutor.
-        Includes circuit breaker, error handling, retry logic, and validation.
-        """
-        instruction = task.instruction
-        agent_name = task.agent_name
-        context = task.context
-
-        # Validate instruction
-        is_valid, validation_error = InputValidator.validate_instruction(instruction)
-        if not is_valid:
-            print(f"Invalid instruction rejected: {validation_error}")
-            raise ValueError(validation_error)
-
-        # Check circuit breaker
-        allowed, reason = await self.circuit_breaker.can_execute(agent_name)
-        if not allowed:
-            error_msg = f"🔴 Circuit breaker blocked request to {agent_name}: {reason}"
-            if self.verbose:
-                print(error_msg)
-            raise CircuitBreakerError(agent_name, error_msg)
-
-        # Track retry attempt
-        operation_key = self._get_operation_key(agent_name, instruction)
-        self._track_retry_attempt(operation_key, agent_name, instruction)
-
-        # Execute agent with circuit breaker protection
-        try:
-            result = await asyncio.wait_for(
-                self.call_sub_agent(agent_name, instruction, context),
-                timeout=120.0
-            )
-
-            if self.verbose:
-                print(f"✓ {agent_name} completed")
-
-            # Track success
-            self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
-            await self.circuit_breaker.record_success(agent_name)
-            self.operation_count += 1
-
-            return result
-
-        except asyncio.TimeoutError:
-            error_msg = f"Agent timed out after 120 seconds. Operation may have completed but response was not received."
-            error_classification = ErrorClassifier.classify(error_msg, agent_name)
-            self._track_retry_attempt(operation_key, agent_name, instruction, error=error_msg)
-
-            # Record failure in circuit breaker
-            await self.circuit_breaker.record_failure(agent_name)
-
-            result = format_error_for_user(
-                error_classification,
-                agent_name,
-                instruction,
-                1,  # attempt_num
-                self.max_retry_attempts
-            )
-
-            if self.verbose:
-                print(f"⚠ {agent_name} agent operation timed out")
-
-            raise RuntimeError(result)
-
-        except Exception as e:
-            error_str = str(e)
-            self.duplicate_detector.track_operation(agent_name, instruction, error_str, success=False)
-            error_classification = ErrorClassifier.classify(error_str, agent_name)
-            self._track_retry_attempt(operation_key, agent_name, instruction, error=error_str)
-
-            # Record failure in circuit breaker
-            await self.circuit_breaker.record_failure(agent_name)
-
-            result = format_error_for_user(
-                error_classification,
-                agent_name,
-                instruction,
-                1,
-                self.max_retry_attempts
-            )
-
-            if self.verbose:
-                print(f"✗ {agent_name} agent failed: {e}")
-
-            raise RuntimeError(result)
 
     def _get_operation_key(self, agent_name: str, instruction: str) -> str:
         key_string = f"{agent_name}:{instruction[:100]}"
