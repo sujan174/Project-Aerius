@@ -846,6 +846,42 @@ Remember: Calendar management is about respecting time - the most finite resourc
             if not self.available_tools:
                 raise RuntimeError("No tools available from Google Calendar MCP server")
 
+            if self.verbose:
+                print(f"[GOOGLE CALENDAR AGENT] Available tools:")
+                for tool in self.available_tools:
+                    print(f"  - {tool.name}")
+
+            # Check if authenticate tool exists
+            auth_tool = next((t for t in self.available_tools if 'authenticate' in t.name.lower()), None)
+
+            if auth_tool:
+                if self.verbose:
+                    print(f"[GOOGLE CALENDAR AGENT] Found authentication tool: {auth_tool.name}")
+                    print(f"[GOOGLE CALENDAR AGENT] Calling authentication tool to initiate OAuth flow...")
+
+                try:
+                    # Call authenticate tool to trigger OAuth flow
+                    auth_result = await self.session.call_tool(auth_tool.name, {})
+
+                    if self.verbose:
+                        print(f"[GOOGLE CALENDAR AGENT] Authentication result:")
+                        for content in auth_result.content:
+                            if hasattr(content, 'text'):
+                                print(f"  {content.text}")
+
+                    # Print authentication instructions for user
+                    print("\n" + "="*70)
+                    print("🔐 GOOGLE CALENDAR AUTHENTICATION REQUIRED")
+                    print("="*70)
+                    for content in auth_result.content:
+                        if hasattr(content, 'text'):
+                            print(content.text)
+                    print("="*70 + "\n")
+
+                except Exception as e:
+                    print(f"[GOOGLE CALENDAR AGENT] ⚠️  Authentication flow started: {e}")
+                    print(f"[GOOGLE CALENDAR AGENT] You may need to complete authentication in your browser or terminal")
+
             # Convert to Gemini format
             gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
 
