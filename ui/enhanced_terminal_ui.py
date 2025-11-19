@@ -274,66 +274,6 @@ class EnhancedTerminalUI:
                 status.append(f" • {message[:50]}", style="dim")
             self.console.print(status)
 
-    def print_confirmation_prompt(
-        self,
-        agent_name: str,
-        operation: str,
-        destination: str,
-        content: str,
-        metadata: Dict[str, Any]
-    ) -> str:
-        """Beautiful confirmation dialog"""
-        self.console.print()
-
-        # Header
-        self.console.rule(
-            f"[bold yellow]⚠  Confirmation Required[/bold yellow]",
-            style="yellow"
-        )
-
-        # Preview panel
-        preview_text = f"[bold cyan]Agent:[/bold cyan] {agent_name.title()}\n"
-        preview_text += f"[bold cyan]Operation:[/bold cyan] {operation}\n"
-        preview_text += f"[bold cyan]Destination:[/bold cyan] {destination}\n\n"
-        preview_text += f"[bold cyan]Content:[/bold cyan]\n"
-        preview_text += f"[white]{content}[/white]\n"
-
-        if metadata:
-            preview_text += f"\n[dim]Metadata: {metadata}[/dim]"
-
-        panel = Panel(
-            preview_text,
-            title="[bold]Preview[/bold]",
-            border_style="yellow",
-            box=box.DOUBLE,
-            padding=(1, 2)
-        )
-        self.console.print(panel)
-
-        # Options
-        options_table = Table(
-            show_header=False,
-            border_style="dim",
-            box=box.SIMPLE,
-            padding=(0, 2)
-        )
-        options_table.add_row("[green bold]a[/green bold]", "[green]Approve and send[/green]")
-        options_table.add_row("[yellow bold]e[/yellow bold]", "[yellow]Edit manually[/yellow]")
-        options_table.add_row("[blue bold]m[/blue bold]", "[blue]Ask AI to modify[/blue]")
-        options_table.add_row("[red bold]r[/red bold]", "[red]Reject (don't send)[/red]")
-
-        self.console.print(options_table)
-        self.console.print()
-
-        # Get choice
-        choice = Prompt.ask(
-            "[bold cyan]Your decision[/bold cyan]",
-            choices=["a", "e", "m", "r"],
-            default="a"
-        )
-
-        return choice
-
     def print_error(self, error: str, traceback_str: Optional[str] = None):
         """Print formatted error"""
         self.console.print()

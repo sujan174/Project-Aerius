@@ -186,7 +186,6 @@ Length: {data.get('length', 0)} chars"""
 {'─'*80}
 ⚠️  RISK ASSESSMENT:
   Risk Level: {data.get('risk_level', 'UNKNOWN')}
-  Needs Confirmation: {data.get('needs_confirmation', False)}
   Reason: {data.get('reason', 'N/A')}"""
 
         elif entry_type == LogEntryType.AGENT_CALL.value:
@@ -296,7 +295,6 @@ Length: {data.get('length', 0)} chars"""
     def log_risk_assessment(
         self,
         risk_level: str,
-        needs_confirmation: bool,
         reason: str,
         intents: Optional[List] = None
     ):
@@ -305,7 +303,6 @@ Length: {data.get('length', 0)} chars"""
             LogEntryType.RISK_ASSESSMENT,
             {
                 'risk_level': risk_level,
-                'needs_confirmation': needs_confirmation,
                 'reason': reason,
                 'intents': [str(i) for i in (intents or [])]
             }

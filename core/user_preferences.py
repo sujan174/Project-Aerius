@@ -2,7 +2,6 @@
 User Preference Learning System
 
 Learns from user behavior to personalize the experience:
-- Confirmation preferences (when to ask vs auto-execute)
 - Preferred agents for tasks
 - Common task patterns
 - Communication style preferences
@@ -18,16 +17,6 @@ from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, time as dt_time
 from collections import Counter, defaultdict
-
-
-@dataclass
-class ConfirmationPreference:
-    """User's learned preference for confirmations"""
-    operation_pattern: str  # e.g., "jira_create", "slack_message", "github_delete"
-    always_confirm: bool
-    auto_execute: bool
-    confidence: float = 0.0  # 0.0 - 1.0
-    sample_count: int = 0  # How many times we've observed this
 
 
 @dataclass
@@ -92,7 +81,6 @@ class UserPreferenceManager:
         self.verbose = verbose
 
         # Learned preferences
-        self.confirmation_prefs: Dict[str, ConfirmationPreference] = {}
         self.agent_prefs: Dict[str, AgentPreference] = {}
         self.communication_style = CommunicationStyle()
         self.working_hours = WorkingHours()
@@ -103,84 +91,7 @@ class UserPreferenceManager:
 
         # Statistics
         self.total_interactions = 0
-        self.confirmations_given = 0
-        self.confirmations_rejected = 0
         self.auto_executions = 0
-
-    # =========================================================================
-    # CONFIRMATION PREFERENCES
-    # =========================================================================
-
-    def record_confirmation_decision(
-        self,
-        operation_pattern: str,
-        user_confirmed: bool,
-        had_chance_to_edit: bool = False
-    ):
-        """
-        Record user's decision on a confirmation prompt.
-
-        Args:
-            operation_pattern: Type of operation (e.g., "jira_delete", "slack_post")
-            user_confirmed: Whether user confirmed or rejected
-            had_chance_to_edit: Whether user edited parameters before confirming
-        """
-        if operation_pattern not in self.confirmation_prefs:
-            self.confirmation_prefs[operation_pattern] = ConfirmationPreference(
-                operation_pattern=operation_pattern,
-                always_confirm=True,  # Start conservative
-                auto_execute=False,
-                confidence=0.0,
-                sample_count=0
-            )
-
-        pref = self.confirmation_prefs[operation_pattern]
-        pref.sample_count += 1
-
-        if user_confirmed:
-            self.confirmations_given += 1
-        else:
-            self.confirmations_rejected += 1
-
-        # Update preferences based on pattern
-        # If user consistently confirms without edits, maybe auto-execute is OK
-        if pref.sample_count >= 5:
-            confirm_rate = self.confirmations_given / (self.confirmations_given + self.confirmations_rejected)
-
-            if confirm_rate > 0.9 and not had_chance_to_edit:
-                # User almost always confirms - consider auto-execute
-                pref.auto_execute = True
-                pref.always_confirm = False
-                pref.confidence = min(0.9, pref.sample_count / 20)
-            elif confirm_rate < 0.5:
-                # User often rejects - always confirm
-                pref.always_confirm = True
-                pref.auto_execute = False
-                pref.confidence = min(0.9, pref.sample_count / 20)
-
-        if self.verbose:
-            print(f"[PREFS] Recorded confirmation: {operation_pattern} -> {'confirmed' if user_confirmed else 'rejected'}")
-
-    def should_auto_execute(self, operation_pattern: str) -> bool:
-        """Check if operation can be auto-executed based on learned preferences"""
-        if operation_pattern not in self.confirmation_prefs:
-            return False
-
-        pref = self.confirmation_prefs[operation_pattern]
-
-        # Only auto-execute if confident
-        if pref.confidence >= self.min_confidence_threshold and pref.auto_execute:
-            return True
-
-        return False
-
-    def should_always_confirm(self, operation_pattern: str) -> bool:
-        """Check if operation should always be confirmed"""
-        if operation_pattern not in self.confirmation_prefs:
-            return True  # Default to safe side
-
-        pref = self.confirmation_prefs[operation_pattern]
-        return pref.always_confirm
 
     # =========================================================================
     # AGENT PREFERENCES
@@ -354,9 +265,6 @@ class UserPreferenceManager:
         """Convert preferences to dictionary for serialization"""
         return {
             'user_id': self.user_id,
-            'confirmation_prefs': {
-                k: asdict(v) for k, v in self.confirmation_prefs.items()
-            },
             'agent_prefs': {
                 k: asdict(v) for k, v in self.agent_prefs.items()
             },
@@ -367,8 +275,6 @@ class UserPreferenceManager:
             },
             'statistics': {
                 'total_interactions': self.total_interactions,
-                'confirmations_given': self.confirmations_given,
-                'confirmations_rejected': self.confirmations_rejected,
                 'auto_executions': self.auto_executions
             },
             'saved_at': time.time()
@@ -387,12 +293,6 @@ class UserPreferenceManager:
         try:
             with open(filepath, 'r') as f:
                 data = json.load(f)
-
-            # Restore confirmation preferences
-            self.confirmation_prefs = {
-                k: ConfirmationPreference(**v)
-                for k, v in data.get('confirmation_prefs', {}).items()
-            }
 
             # Restore agent preferences
             self.agent_prefs = {
@@ -414,8 +314,6 @@ class UserPreferenceManager:
             # Restore statistics
             stats = data.get('statistics', {})
             self.total_interactions = stats.get('total_interactions', 0)
-            self.confirmations_given = stats.get('confirmations_given', 0)
-            self.confirmations_rejected = stats.get('confirmations_rejected', 0)
             self.auto_executions = stats.get('auto_executions', 0)
 
             if self.verbose:
@@ -436,14 +334,6 @@ class UserPreferenceManager:
             f"User: {self.user_id}",
             f"Total Interactions: {self.total_interactions}\n"
         ]
-
-        # Confirmation preferences
-        if self.confirmation_prefs:
-            lines.append("**Confirmation Preferences**:")
-            for pattern, pref in self.confirmation_prefs.items():
-                status = "Auto-execute" if pref.auto_execute else "Always confirm"
-                lines.append(f"  • {pattern}: {status} (confidence: {pref.confidence:.0%})")
-            lines.append("")
 
         # Agent preferences
         if self.agent_prefs:

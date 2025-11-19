@@ -265,10 +265,6 @@ class BaseAgent(ABC):
         """
         OPTIONAL: Return schema describing possible actions this agent can perform.
 
-        Used by ActionParser to understand editable fields and constraints.
-        Implementing this allows ActionParser to provide better field metadata
-        and enable user editing of action parameters.
-
         Default implementation returns empty dict (agent doesn't support schema).
 
         Expected format:

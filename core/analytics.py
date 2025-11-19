@@ -86,8 +86,6 @@ class SessionMetrics:
     end_time: Optional[float] = None
     user_messages: int = 0
     agent_calls: int = 0
-    confirmations_shown: int = 0
-    confirmations_accepted: int = 0
     errors_encountered: int = 0
     successful_operations: int = 0
 
@@ -96,13 +94,6 @@ class SessionMetrics:
         """Get session duration in seconds"""
         end = self.end_time or time.time()
         return end - self.start_time
-
-    @property
-    def confirmation_acceptance_rate(self) -> float:
-        """Calculate confirmation acceptance rate"""
-        if self.confirmations_shown == 0:
-            return 0.0
-        return self.confirmations_accepted / self.confirmations_shown
 
 
 class AnalyticsCollector:
@@ -259,12 +250,6 @@ class AnalyticsCollector:
         # Track usage by day
         today = datetime.now().strftime("%Y-%m-%d")
         self.daily_usage[today] += 1
-
-    def record_confirmation(self, accepted: bool):
-        """Record a confirmation prompt"""
-        self.current_session.confirmations_shown += 1
-        if accepted:
-            self.current_session.confirmations_accepted += 1
 
     def record_operation(self, operation_type: str, success: bool):
         """Record an operation execution"""
