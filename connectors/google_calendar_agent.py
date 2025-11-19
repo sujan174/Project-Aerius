@@ -766,52 +766,74 @@ Remember: Calendar management is about respecting time - the most finite resourc
                 print(f"[GOOGLE CALENDAR AGENT] Initializing connection to Google Calendar MCP server")
 
             # Google Calendar credentials should be in environment
+            # This MCP server uses a credentials JSON file instead of individual env vars
+            credentials_path = os.environ.get("GOOGLE_OAUTH_CREDENTIALS", "")
+
+            # Fall back to individual env vars for backwards compatibility
             client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
             client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-            redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:4153/oauth2callback")
-            use_manual_auth = os.environ.get("USE_MANUAL_AUTH", "false")
 
-            # Check if credentials look like placeholders
-            is_placeholder_id = (not client_id or
-                               "your_google_client_id_here" in client_id or
-                               len(client_id.strip()) < 10)
-            is_placeholder_secret = (not client_secret or
-                                    "your_google_client_secret_here" in client_secret or
-                                    len(client_secret.strip()) < 10)
+            # Check if credentials file exists
+            if credentials_path and os.path.exists(credentials_path):
+                if self.verbose:
+                    print(f"[GOOGLE CALENDAR AGENT] Using credentials file: {credentials_path}")
+            elif client_id and client_secret:
+                # Create a temporary credentials file from env vars
+                import tempfile
+                import json
+                creds_data = {
+                    "installed": {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uris": ["http://localhost"],
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token"
+                    }
+                }
+                # Write to a temp file
+                temp_creds = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+                json.dump(creds_data, temp_creds)
+                temp_creds.close()
+                credentials_path = temp_creds.name
+                if self.verbose:
+                    print(f"[GOOGLE CALENDAR AGENT] Created temporary credentials file from env vars")
+            else:
+                # Check if credentials look like placeholders
+                is_placeholder_id = (not client_id or
+                                   "your_google_client_id_here" in client_id or
+                                   len(client_id.strip()) < 10)
+                is_placeholder_secret = (not client_secret or
+                                        "your_google_client_secret_here" in client_secret or
+                                        len(client_secret.strip()) < 10)
 
-            if self.verbose:
-                print(f"[GOOGLE CALENDAR AGENT] Client ID length: {len(client_id)}")
-                print(f"[GOOGLE CALENDAR AGENT] Client Secret length: {len(client_secret)}")
-                print(f"[GOOGLE CALENDAR AGENT] USE_MANUAL_AUTH: {use_manual_auth}")
+                if is_placeholder_id or is_placeholder_secret:
+                    print(f"[GOOGLE CALENDAR AGENT] ❌ Client ID: {'PLACEHOLDER or EMPTY' if is_placeholder_id else 'SET'}")
+                    print(f"[GOOGLE CALENDAR AGENT] ❌ Client Secret: {'PLACEHOLDER or EMPTY' if is_placeholder_secret else 'SET'}")
 
-            if is_placeholder_id or is_placeholder_secret:
-                print(f"[GOOGLE CALENDAR AGENT] ❌ Client ID: {'PLACEHOLDER or EMPTY' if is_placeholder_id else 'SET'}")
-                print(f"[GOOGLE CALENDAR AGENT] ❌ Client Secret: {'PLACEHOLDER or EMPTY' if is_placeholder_secret else 'SET'}")
                 raise ValueError(
-                    "Google Calendar authentication required. Please set:\n"
+                    "Google Calendar authentication required. Please set ONE of:\n\n"
+                    "Option 1 - Credentials JSON file (recommended):\n"
+                    "  - GOOGLE_OAUTH_CREDENTIALS=/path/to/credentials.json\n"
+                    "  - Download from Google Cloud Console → Credentials → Download JSON\n\n"
+                    "Option 2 - Individual environment variables:\n"
                     "  - GOOGLE_CLIENT_ID\n"
-                    "  - GOOGLE_CLIENT_SECRET\n"
-                    "  - GOOGLE_REDIRECT_URI (optional, default: http://localhost:4153/oauth2callback)\n"
-                    "  - USE_MANUAL_AUTH (optional, set to 'true' for manual authentication)\n\n"
-                    "To obtain these:\n"
+                    "  - GOOGLE_CLIENT_SECRET\n\n"
+                    "To obtain credentials:\n"
                     "1. Go to https://console.cloud.google.com\n"
                     "2. Create a new project or select existing\n"
                     "3. Enable Google Calendar API\n"
                     "4. Create OAuth 2.0 credentials (Desktop app)\n"
-                    "5. Add redirect URI: http://localhost:4153/oauth2callback\n\n"
-                    "Note: When you start the agent:\n"
-                    "  - If USE_MANUAL_AUTH=true: You'll get a URL to open manually\n"
-                    "  - Otherwise: Browser will open automatically\n"
-                    "See setup instructions for detailed steps."
+                    "5. Download the JSON file or copy Client ID/Secret\n\n"
+                    "First-time setup: Run 'npx @cocal/google-calendar-mcp auth' to authenticate"
                 )
+
+            if self.verbose:
+                print(f"[GOOGLE CALENDAR AGENT] Credentials path: {credentials_path}")
 
             # Prepare environment variables
             env_vars = {
                 **os.environ,
-                "GOOGLE_CLIENT_ID": client_id,
-                "GOOGLE_CLIENT_SECRET": client_secret,
-                "GOOGLE_REDIRECT_URI": redirect_uri,
-                "USE_MANUAL_AUTH": use_manual_auth
+                "GOOGLE_OAUTH_CREDENTIALS": credentials_path
             }
             if not self.verbose:
                 # Suppress debug output from MCP server
@@ -820,7 +842,7 @@ Remember: Calendar management is about respecting time - the most finite resourc
 
             server_params = StdioServerParameters(
                 command="npx",
-                args=["-y", "@takumi0706/google-calendar-mcp"],
+                args=["-y", "@cocal/google-calendar-mcp"],
                 env=env_vars
             )
 
@@ -850,37 +872,6 @@ Remember: Calendar management is about respecting time - the most finite resourc
                 print(f"[GOOGLE CALENDAR AGENT] Available tools:")
                 for tool in self.available_tools:
                     print(f"  - {tool.name}")
-
-            # Check if authenticate tool exists
-            auth_tool = next((t for t in self.available_tools if 'authenticate' in t.name.lower()), None)
-
-            if auth_tool:
-                if self.verbose:
-                    print(f"[GOOGLE CALENDAR AGENT] Found authentication tool: {auth_tool.name}")
-                    print(f"[GOOGLE CALENDAR AGENT] Calling authentication tool to initiate OAuth flow...")
-
-                try:
-                    # Call authenticate tool to trigger OAuth flow
-                    auth_result = await self.session.call_tool(auth_tool.name, {})
-
-                    if self.verbose:
-                        print(f"[GOOGLE CALENDAR AGENT] Authentication result:")
-                        for content in auth_result.content:
-                            if hasattr(content, 'text'):
-                                print(f"  {content.text}")
-
-                    # Print authentication instructions for user
-                    print("\n" + "="*70)
-                    print("🔐 GOOGLE CALENDAR AUTHENTICATION REQUIRED")
-                    print("="*70)
-                    for content in auth_result.content:
-                        if hasattr(content, 'text'):
-                            print(content.text)
-                    print("="*70 + "\n")
-
-                except Exception as e:
-                    print(f"[GOOGLE CALENDAR AGENT] ⚠️  Authentication flow started: {e}")
-                    print(f"[GOOGLE CALENDAR AGENT] You may need to complete authentication in your browser or terminal")
 
             # Convert to Gemini format
             gemini_tools = [self._build_function_declaration(tool) for tool in self.available_tools]
