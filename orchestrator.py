@@ -265,7 +265,10 @@ class OrchestratorAgent:
             print(f"{C.CYAN}📝 Logging to: {self.simple_logger.get_session_dir()}{C.ENDC}")
             print(f"{C.CYAN}🔄 Retry, 📊 Analytics, 🧠 Preferences, ↩️  Undo - All enabled{C.ENDC}")
 
-        self.system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
+        # Track current intent for agent usage recording
+        self._current_intent_type = None
+
+        self._base_system_prompt = """You are an AI orchestration system that coordinates specialized agents to help users accomplish complex tasks across multiple platforms and tools.
 
 Your core purpose is to be a highly capable, reliable workspace assistant that understands user intent, breaks down complex requests into actionable steps, and seamlessly coordinates specialized agents to deliver results.
 
@@ -395,11 +398,11 @@ If you answer "no" to any question, report the error instead.
 **Remember**: Fabricating data destroys trust permanently. It is ALWAYS better to say "I couldn't retrieve this" than to provide convincing-sounding fake data. ACCURACY trumps completeness.
 
 Remember: Your goal is to be genuinely helpful, making users more productive and their work across platforms smoother and more connected. Think carefully, act decisively, and always keep the user's ultimate goal in mind."""
-        
+
         self.model = None
         self.chat = None
         self.conversation_history = []
-        
+
         self.schema_type_map = {
             "string": protos.Type.STRING,
             "number": protos.Type.NUMBER,
@@ -408,6 +411,53 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             "object": protos.Type.OBJECT,
             "array": protos.Type.ARRAY,
         }
+
+    def _build_dynamic_system_prompt(self) -> str:
+        """
+        Build system prompt with dynamic user preferences and agent health status.
+
+        This enhances the base prompt with:
+        - User communication style preferences
+        - Agent health/availability status
+        - Learned user patterns
+        """
+        prompt = self._base_system_prompt
+
+        # Add user communication preferences
+        comm_prefs = self.user_prefs.get_communication_preferences()
+        if self.user_prefs.communication_style.confidence >= self.user_prefs.min_confidence_threshold:
+            style_section = f"""
+
+# User Communication Preferences (Learned)
+
+Based on past interactions, this user prefers:
+- Verbose explanations: {"Yes" if comm_prefs['verbose'] else "No, keep responses concise"}
+- Technical details: {"Yes, include technical specifics" if comm_prefs['technical'] else "No, use simplified language"}
+- Emojis in responses: {"Yes" if comm_prefs['emojis'] else "No, avoid emojis"}
+
+Adjust your communication style accordingly."""
+            prompt += style_section
+
+        # Add agent health status
+        unhealthy_agents = []
+        for agent_name in self.sub_agents.keys():
+            if hasattr(self, 'circuit_breaker'):
+                state = self.circuit_breaker.get_circuit_state(agent_name)
+                if state and state != 'closed':
+                    unhealthy_agents.append(f"{agent_name} ({state})")
+
+        if unhealthy_agents:
+            health_section = f"""
+
+# Agent Availability Warning
+
+The following agents are currently experiencing issues and may be unavailable:
+{', '.join(unhealthy_agents)}
+
+Prefer using healthy agents when possible. If a user specifically requests an unhealthy agent, explain that it may be temporarily unavailable."""
+            prompt += health_section
+
+        return prompt
 
     # =========================================================================
     # UNDO HANDLER REGISTRATION
@@ -1166,8 +1216,8 @@ Provide a clear instruction describing what you want to accomplish.""",
             # Create model with agent tools using LLM abstraction
             agent_tools = self._create_agent_tools()
 
-            # Set the system instruction on the LLM config
-            self.llm.config.system_instruction = self.system_prompt
+            # Set the system instruction on the LLM config (with dynamic preferences)
+            self.llm.config.system_instruction = self._build_dynamic_system_prompt()
 
             # Set tools on the LLM (for Gemini, these are FunctionDeclarations)
             self.llm.set_tools(agent_tools)
@@ -1184,8 +1234,23 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Process with Hybrid Intelligence System v5.0 (async)
         intelligence = await self._process_with_intelligence(user_message)
 
+        # Store current intent for agent usage tracking
+        primary_intent = intelligence.get('primary_intent')
+        if primary_intent and hasattr(primary_intent, 'type'):
+            self._current_intent_type = str(primary_intent.type.value) if hasattr(primary_intent.type, 'value') else str(primary_intent.type)
+        else:
+            self._current_intent_type = 'unknown'
+
         # Use resolved message if references were resolved
         message_to_send = intelligence.get('resolved_message', user_message)
+
+        # Add agent preference hints based on learned patterns
+        if self._current_intent_type and self._current_intent_type != 'unknown':
+            preferred_agent = self.user_prefs.get_preferred_agent(self._current_intent_type)
+            if preferred_agent:
+                message_to_send += f"\n\n[User Preference: For {self._current_intent_type} tasks, this user typically prefers using the {preferred_agent} agent]"
+                if self.verbose:
+                    print(f"{C.CYAN}📊 User prefers {preferred_agent} for {self._current_intent_type} tasks{C.ENDC}")
 
         # Check confidence and handle accordingly
         action, explanation = intelligence['action_recommendation']
@@ -1305,6 +1370,16 @@ Provide a clear instruction describing what you want to accomplish.""",
 
                 # Feature #21: Track successful operation in duplicate detector
                 self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
+
+                # Record agent usage for preference learning
+                if self._current_intent_type and self._current_intent_type != 'unknown':
+                    self.user_prefs.record_agent_usage(
+                        task_pattern=self._current_intent_type,
+                        agent_used=agent_name,
+                        was_successful=True
+                    )
+                    if self.verbose:
+                        print(f"{C.CYAN}📊 Recorded: {agent_name} used for {self._current_intent_type}{C.ENDC}")
 
                 # Feature #8: Mark success if this was a retry
                 if retry_context:
