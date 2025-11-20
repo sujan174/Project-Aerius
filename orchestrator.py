@@ -36,15 +36,12 @@ from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
 
 # Import production utilities
 from config import Config
-from core.logger import get_logger
+from core.logging_config import get_logger
 from core.input_validator import InputValidator
 from core.error_handler import ErrorClassifier, format_error_for_user, DuplicateOperationDetector
 
 # Import observability system
-from core.observability import (
-    initialize_observability, get_observability,
-    traced_span, SpanKind, start_trace, end_trace
-)
+from core.observability import initialize_observability, get_observability
 
 # Import new enhancement systems
 from core.retry_manager import RetryManager
@@ -162,10 +159,6 @@ class OrchestratorAgent:
             enable_metrics=True,
             verbose=self.verbose
         )
-
-        # Get specialized loggers
-        self.orch_logger = self.observability.orchestration_logger
-        self.intel_logger = self.observability.intelligence_logger
 
         # Terminal UI
         self.ui = TerminalUI(verbose=self.verbose)
@@ -660,15 +653,6 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
                     'error_count': 0
                 }
 
-                # Log agent initialization in orchestration logger
-                if hasattr(self, 'orch_logger'):
-                    self.orch_logger.log_agent_initialized(
-                        agent_name=agent_name,
-                        capabilities=capabilities,
-                        metadata={'loaded_at': asyncio.get_event_loop().time()}
-                    )
-                    self.orch_logger.log_agent_ready(agent_name)
-
                 successful += 1
             else:
                 # Agent failed to load - mark as unavailable (Feature #15: Graceful Degradation)
@@ -750,16 +734,6 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Create operation key for retry/analytics tracking
         operation_key = f"{agent_name}_{hashlib.md5(instruction[:100].encode()).hexdigest()[:8]}"
 
-        # Generate task ID and log task assignment
-        task_id = operation_key
-        if hasattr(self, 'orch_logger'):
-            self.orch_logger.log_task_assigned(
-                task_id=task_id,
-                task_name=instruction[:100],
-                agent_name=agent_name,
-                metadata={'operation_key': operation_key}
-            )
-
         # SIMPLE LOGGING - Log agent selection
         available_agents = list(self.sub_agents.keys())
         self.simple_logger.log_agent_selection(
@@ -770,21 +744,7 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         # Define the operation to execute
         async def execute_operation():
-            # Log task started
-            if hasattr(self, 'orch_logger'):
-                self.orch_logger.log_task_started(task_id)
-
             result = await self._execute_agent_direct(agent_name, instruction, context)
-
-            # Log task completed
-            if hasattr(self, 'orch_logger'):
-                success = result and not result.startswith("⚠️") and not result.startswith("❌")
-                self.orch_logger.log_task_completed(
-                    task_id=task_id,
-                    success=success,
-                    error=result if not success else None
-                )
-
             return result
 
         # Define progress callback for retry manager
@@ -956,13 +916,6 @@ Provide a clear instruction describing what you want to accomplish.""",
 
         Returns intelligence analysis including intents, entities, confidence, etc.
         """
-        # Log start of intelligence processing
-        if hasattr(self, 'intel_logger'):
-            start_time = self.intel_logger.log_message_processing_start(user_message)
-        else:
-            import time
-            start_time = time.time()
-
         # SIMPLE LOGGING - Log intelligence processing start
         self.simple_logger.log_intelligence_start(user_message)
 
@@ -980,19 +933,6 @@ Provide a clear instruction describing what you want to accomplish.""",
         intents = hybrid_result.intents
         entities = hybrid_result.entities
 
-        # Log intent classification with hybrid intelligence metadata
-        if hasattr(self, 'intel_logger'):
-            intent_names = [str(i) for i in intents]
-            confidence_scores = {str(i): getattr(i, 'confidence', 0.8) for i in intents}
-            self.intel_logger.log_intent_classification(
-                message=user_message,
-                detected_intents=intent_names[:5],
-                confidence_scores=confidence_scores,
-                classification_method=f"hybrid_{hybrid_result.path_used}",  # 'hybrid_fast' or 'hybrid_llm'
-                duration_ms=hybrid_result.latency_ms,
-                cache_hit=(hybrid_result.path_used == 'fast')  # Fast path is effectively cached
-            )
-
         # SIMPLE LOGGING - Log intent classification
         self.simple_logger.log_intent_classification(
             intents=[str(i) for i in intents],
@@ -1000,25 +940,6 @@ Provide a clear instruction describing what you want to accomplish.""",
             method=f"hybrid_{hybrid_result.path_used}",
             reasoning=hybrid_result.reasoning
         )
-
-        # Log entity extraction with hybrid intelligence metadata
-        if hasattr(self, 'intel_logger') and entities:
-            entity_dict = {}
-            for ent in entities:
-                ent_type = getattr(ent, 'type', 'unknown')
-                ent_value = getattr(ent, 'value', str(ent))
-                if ent_type not in entity_dict:
-                    entity_dict[ent_type] = []
-                entity_dict[ent_type].append(ent_value)
-
-            self.intel_logger.log_entity_extraction(
-                message=user_message,
-                extracted_entities=entity_dict,
-                entity_relationships=[],
-                confidence=hybrid_result.confidence,  # Use hybrid result confidence
-                duration_ms=hybrid_result.latency_ms,  # Already included in classification time
-                cache_hit=(hybrid_result.path_used == 'fast')
-            )
 
         # SIMPLE LOGGING - Log entity extraction
         if entities:
@@ -1040,21 +961,6 @@ Provide a clear instruction describing what you want to accomplish.""",
             intents=intents,
             entities=entities
         )
-
-        # Log confidence scoring
-        if hasattr(self, 'intel_logger'):
-            # Extract numeric score from Confidence object
-            confidence_value = confidence.score if hasattr(confidence, 'score') else 0.5
-            self.intel_logger.log_confidence_score(
-                overall_confidence=confidence_value,
-                component_scores={
-                    'intent': 0.85,
-                    'entity': 0.80,
-                    'context': 0.90
-                },
-                factors={'message_length': len(user_message)},
-                duration_ms=1.0
-            )
 
         # 4. Update conversation context
         self.context_manager.add_turn(
