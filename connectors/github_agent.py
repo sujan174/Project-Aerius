@@ -1091,6 +1091,42 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             if self.verbose:
                 print(f"[GITHUB AGENT] Invalidated repositories cache after {operation_type}")
 
+    def _inject_repo_context(self, instruction: str) -> str:
+        """
+        Inject available GitHub repositories directly into the instruction.
+
+        This optimization prevents unnecessary github_list_repos tool calls and
+        helps the LLM make better decisions about which repositories exist.
+
+        Args:
+            instruction: Original instruction from user
+
+        Returns:
+            Instruction with injected repository context
+        """
+        repositories = self.metadata_cache.get('repositories', {})
+
+        # Only inject if we have cached repos
+        if not repositories:
+            return instruction
+
+        # Build repo list with info for injection
+        repo_info = []
+        for full_name, data in repositories.items():
+            branch = data.get('default_branch', 'main')
+            repo_info.append(f"{full_name} (branch: {branch})")
+
+        # Limit to first 10 repos to avoid overwhelming the context
+        repo_list = ", ".join(repo_info[:10])
+
+        # Inject repository context into instruction
+        context = (
+            f"\n\n[Available GitHub Repositories: {repo_list}]\n"
+            f"[Note: Use these repositories directly - no need to list repos first]"
+        )
+
+        return instruction + context
+
     async def _fetch_accessible_repos(self) -> Dict:
         """Fetch accessible repositories"""
         try:
@@ -1163,10 +1199,20 @@ Remember: GitHub is where the world builds software. Every issue you create, eve
             if context_from_other_agents and self.verbose:
                 print(f"[GITHUB AGENT] Found context from other agents")
 
-            # Use resolved instruction for the rest
-            instruction = resolved_instruction
+            # Step 3: OPTIMIZATION - Inject available repositories into instruction
+            # This eliminates unnecessary github_list_repos tool calls
+            resolved_instruction = self._inject_repo_context(resolved_instruction)
+
+            if self.verbose:
+                print(f"[GITHUB AGENT] Injected repository context into instruction")
+
+            # Enhance instruction with cross-agent context if available
+            if context_from_other_agents:
+                resolved_instruction += f"\n\n[Additional context from other agents: {context_from_other_agents}]"
+
+            # Step 4: Use resolved instruction for the rest
             chat = self.model.start_chat()
-            response = await chat.send_message_async(instruction)
+            response = await chat.send_message_async(resolved_instruction)
 
             # Handle function calling loop with retry logic
             max_iterations = 15

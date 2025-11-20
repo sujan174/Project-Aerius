@@ -816,6 +816,46 @@ Remember: You're not just executing commands—you're helping users manage their
             if self.verbose:
                 print(f"[JIRA AGENT] Invalidated all recent issues caches after {operation_type}")
 
+    def _inject_project_context(self, instruction: str) -> str:
+        """
+        Inject available Jira projects and issue types directly into the instruction.
+
+        This optimization prevents unnecessary jira_get_projects tool calls and
+        helps the LLM make better decisions about which projects exist and what
+        issue types are available.
+
+        Args:
+            instruction: Original instruction from user
+
+        Returns:
+            Instruction with injected project context
+        """
+        projects = self.metadata_cache.get('projects', {})
+
+        # Only inject if we have cached projects
+        if not projects:
+            return instruction
+
+        # Build project list with issue types for injection
+        project_info = []
+        for key, data in projects.items():
+            issue_types = data.get('issue_types', [])
+            if issue_types:
+                project_info.append(f"{key} (types: {', '.join(issue_types[:5])})")
+            else:
+                project_info.append(key)
+
+        # Limit to first 10 projects to avoid overwhelming the context
+        project_list = ", ".join(project_info[:10])
+
+        # Inject project context into instruction
+        context = (
+            f"\n\n[Available Jira Projects: {project_list}]\n"
+            f"[Note: Use these projects directly - no need to list projects first]"
+        )
+
+        return instruction + context
+
     async def _fetch_all_projects(self) -> Dict:
         """Fetch all accessible projects"""
         try:
@@ -900,7 +940,14 @@ Remember: You're not just executing commands—you're helping users manage their
             if context_from_other_agents and self.verbose:
                 print(f"[JIRA AGENT] Found context from other agents: {len(context_from_other_agents)} resources")
 
-            # Step 3: Start conversation with LLM
+            # Step 3: OPTIMIZATION - Inject available projects into instruction
+            # This eliminates unnecessary jira_get_projects tool calls
+            resolved_instruction = self._inject_project_context(resolved_instruction)
+
+            if self.verbose:
+                print(f"[JIRA AGENT] Injected project context into instruction")
+
+            # Step 4: Start conversation with LLM
             chat = self.model.start_chat()
 
             # Enhance instruction with cross-agent context if available

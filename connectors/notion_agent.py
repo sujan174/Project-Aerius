@@ -843,6 +843,44 @@ Remember: You're not just executing commands—you're helping users build a powe
             if self.verbose:
                 print(f"[NOTION AGENT] Invalidated databases cache after {operation_type}")
 
+    def _inject_database_context(self, instruction: str) -> str:
+        """
+        Inject available Notion databases directly into the instruction.
+
+        This optimization prevents unnecessary notion_search tool calls and
+        helps the LLM make better decisions about which databases exist.
+
+        Args:
+            instruction: Original instruction from user
+
+        Returns:
+            Instruction with injected database context
+        """
+        databases = self.metadata_cache.get('databases', {})
+
+        # Only inject if we have cached databases
+        if not databases:
+            return instruction
+
+        # Build database list for injection
+        db_info = []
+        for db_id, data in databases.items():
+            title = data.get('title', 'Untitled')
+            # Use short ID for readability
+            short_id = db_id[:8] if len(db_id) > 8 else db_id
+            db_info.append(f"{title} ({short_id}...)")
+
+        # Limit to first 10 databases to avoid overwhelming the context
+        db_list = ", ".join(db_info[:10])
+
+        # Inject database context into instruction
+        context = (
+            f"\n\n[Available Notion Databases: {db_list}]\n"
+            f"[Note: Use these databases directly - no need to search first]"
+        )
+
+        return instruction + context
+
     # ========================================================================
     # CORE EXECUTION ENGINE
     # ========================================================================
@@ -864,10 +902,20 @@ Remember: You're not just executing commands—you're helping users build a powe
             if context_from_other_agents and self.verbose:
                 print(f"[NOTION AGENT] Found context from other agents")
 
-            # Use resolved instruction for the rest
-            instruction = resolved_instruction
+            # Step 3: OPTIMIZATION - Inject available databases into instruction
+            # This eliminates unnecessary notion_search tool calls
+            resolved_instruction = self._inject_database_context(resolved_instruction)
+
+            if self.verbose:
+                print(f"[NOTION AGENT] Injected database context into instruction")
+
+            # Enhance instruction with cross-agent context if available
+            if context_from_other_agents:
+                resolved_instruction += f"\n\n[Additional context from other agents: {context_from_other_agents}]"
+
+            # Step 4: Start conversation with LLM
             chat = self.model.start_chat()
-            response = await chat.send_message_async(instruction)
+            response = await chat.send_message_async(resolved_instruction)
 
             # Handle function calling loop with retry logic
             max_iterations = 15
