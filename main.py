@@ -16,6 +16,7 @@ Version: 3.0
 
 import asyncio
 import sys
+import warnings
 from pathlib import Path
 
 # Add project root to path
@@ -25,8 +26,85 @@ from orchestrator import OrchestratorAgent
 from ui.enhanced_terminal_ui import EnhancedTerminalUI
 
 
+# ============================================================================
+# ASYNC GENERATOR CLEANUP FIX
+# ============================================================================
+#
+# MCP's stdio_client uses anyio task groups which require __aexit__() to be
+# called from the same task as __aenter__(). During application shutdown,
+# Python's garbage collector may finalize async generators from a different
+# task context, causing RuntimeError: "Attempted to exit cancel scope in a
+# different task than it was entered in"
+#
+# This fix installs a custom async generator finalizer that suppresses these
+# specific errors during shutdown, which don't affect functionality.
+# ============================================================================
+
+_shutting_down = False
+
+def _create_safe_finalizer(loop):
+    """Create a finalizer that safely closes async generators during shutdown"""
+    def safe_finalizer(agen):
+        if _shutting_down:
+            # During shutdown, suppress task context errors from MCP cleanup
+            try:
+                loop.run_until_complete(agen.aclose())
+            except RuntimeError as e:
+                # Suppress "cancel scope in different task" errors
+                if "cancel scope" in str(e) or "different task" in str(e):
+                    pass
+                else:
+                    raise
+            except Exception:
+                # Suppress all errors during shutdown - connections will close anyway
+                pass
+        else:
+            # Normal operation - use default behavior
+            loop.run_until_complete(agen.aclose())
+    return safe_finalizer
+
+def setup_asyncgen_hooks():
+    """Set up async generator hooks to handle MCP cleanup gracefully"""
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            sys.set_asyncgen_hooks(finalizer=_create_safe_finalizer(loop))
+    except RuntimeError:
+        # No event loop available yet, will be set up later
+        pass
+
+# Suppress specific warnings from anyio/MCP during cleanup
+warnings.filterwarnings(
+    "ignore",
+    message=".*cancel scope.*different task.*",
+    category=RuntimeWarning
+)
+
+# Custom unraisable hook to suppress MCP cleanup errors during shutdown
+_original_unraisable_hook = sys.unraisablehook
+
+def _custom_unraisable_hook(unraisable):
+    """Suppress MCP-related errors during shutdown"""
+    if _shutting_down:
+        # Check if this is an MCP/anyio cleanup error
+        err_str = str(unraisable.exc_value) if unraisable.exc_value else ""
+        obj_str = str(unraisable.object) if unraisable.object else ""
+
+        # Suppress cancel scope and stdio_client errors during shutdown
+        if any(pattern in err_str or pattern in obj_str for pattern in [
+            "cancel scope", "different task", "stdio_client", "TaskGroup"
+        ]):
+            return  # Suppress the error
+
+    # Call original hook for other errors
+    _original_unraisable_hook(unraisable)
+
+sys.unraisablehook = _custom_unraisable_hook
+
+
 async def main():
     """Main entry point with enhanced UI"""
+    global _shutting_down
 
     # Parse arguments
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
@@ -38,7 +116,10 @@ async def main():
             connectors_dir="connectors",
             verbose=verbose
         )
-        await orchestrator.run_interactive()
+        try:
+            await orchestrator.run_interactive()
+        finally:
+            _shutting_down = True
         return
 
     # Use enhanced UI
@@ -111,6 +192,8 @@ async def main():
             import traceback
             ui.print_error(str(e), traceback.format_exc())
     finally:
+        # Signal shutdown to suppress MCP cleanup errors
+        _shutting_down = True
         # Cleanup
         if 'orchestrator' in locals():
             await orchestrator.cleanup()

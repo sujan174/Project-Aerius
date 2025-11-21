@@ -1569,8 +1569,9 @@ Remember: Calendar management is about respecting time - the most finite resourc
         if self.session and self.session_entered:
             try:
                 await self.session.__aexit__(None, None, None)
-            except Exception as e:
+            except BaseException as e:
                 # Suppress all cleanup errors to prevent cascading failures
+                # Use BaseException to catch BaseExceptionGroup from anyio
                 if self.verbose:
                     print(f"[GOOGLE CALENDAR AGENT] Suppressed session cleanup error: {e}")
             finally:
@@ -1581,8 +1582,8 @@ Remember: Calendar management is about respecting time - the most finite resourc
         if self.stdio_context and self.stdio_context_entered:
             try:
                 await self.stdio_context.__aexit__(None, None, None)
-            except Exception as e:
-                # Suppress all cleanup errors
+            except BaseException as e:
+                # Suppress all cleanup errors (including BaseExceptionGroup from anyio)
                 if self.verbose:
                     print(f"[GOOGLE CALENDAR AGENT] Suppressed stdio cleanup error: {e}")
             finally:

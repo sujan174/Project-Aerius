@@ -717,14 +717,16 @@ Remember: Be respectful, efficient, and accurate. Web automation is powerful - u
 
             if self.session:
                 await self.session.__aexit__(None, None, None)
-        except Exception as e:
+        except BaseException as e:
+            # Use BaseException to catch BaseExceptionGroup from anyio
             if self.verbose:
                 print(f"[BROWSER AGENT] Error closing session: {e}")
 
         try:
             if self.stdio_context:
                 await self.stdio_context.__aexit__(None, None, None)
-        except Exception as e:
+        except BaseException as e:
+            # Suppress all cleanup errors (including BaseExceptionGroup from anyio)
             if self.verbose:
                 print(f"[BROWSER AGENT] Error closing stdio context: {e}")
 
