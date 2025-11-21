@@ -63,6 +63,12 @@ from intelligence.instruction_parser import (
     IntelligentInstructionParser, InstructionMemory, ParsedInstruction
 )
 
+# Import new unified instruction memory system with RAG retrieval
+from core.instruction_memory_system import (
+    InstructionMemorySystem, InstructionCategory, InstructionType,
+    INSTRUCTION_STORAGE_GUIDELINES
+)
+
 logger = get_logger(__name__)
 load_dotenv()
 
@@ -304,6 +310,46 @@ class OrchestratorAgent:
                     print(f"{C.CYAN}   • {key}: {value}{C.ENDC}")
 
         # ===================================================================
+        # NEW UNIFIED INSTRUCTION MEMORY SYSTEM (with RAG retrieval)
+        # ===================================================================
+
+        # Create embedding function for semantic search
+        async def embedding_fn(text: str) -> List[float]:
+            """Generate embeddings using the LLM"""
+            try:
+                # Use Gemini's embedding model
+                result = genai.embed_content(
+                    model="models/embedding-001",
+                    content=text,
+                    task_type="retrieval_document"
+                )
+                return result['embedding']
+            except Exception as e:
+                logger.warning(f"Embedding generation failed: {e}")
+                return []
+
+        # Initialize new instruction memory system
+        instruction_memory_file = Path(f"data/instruction_memory/{user_id}.json")
+        instruction_memory_file.parent.mkdir(parents=True, exist_ok=True)
+        self.instruction_memory_system = InstructionMemorySystem(
+            storage_path=str(instruction_memory_file),
+            embedding_fn=embedding_fn,
+            verbose=self.verbose
+        )
+
+        # Show loaded instructions from new system
+        new_system_stats = self.instruction_memory_system.get_statistics()
+        if new_system_stats['total_instructions'] > 0:
+            print(f"{C.CYAN}📝 Loaded {new_system_stats['total_instructions']} instruction(s) from new system{C.ENDC}")
+            print(f"{C.CYAN}   • Defaults (always applied): {new_system_stats['default_instructions']}{C.ENDC}")
+            print(f"{C.CYAN}   • Contextual (matched per message): {new_system_stats['contextual_instructions']}{C.ENDC}")
+
+        # Show missing defaults that should be set
+        missing = new_system_stats.get('missing_defaults', [])
+        if missing and self.verbose:
+            print(f"{C.YELLOW}💡 Tip: Set default preferences for: {', '.join(missing)}{C.ENDC}")
+
+        # ===================================================================
 
         # Register undo handlers
         self._register_undo_handlers()
@@ -448,6 +494,40 @@ If you answer "no" to any question, report the error instead.
 
 **Remember**: Fabricating data destroys trust permanently. It is ALWAYS better to say "I couldn't retrieve this" than to provide convincing-sounding fake data. ACCURACY trumps completeness.
 
+# Handling User Instructions
+
+The system automatically detects and remembers user instructions. When a user gives you a preference or rule to remember, acknowledge it clearly.
+
+## What Counts as an Instruction to Remember
+
+**REMEMBER these types of statements:**
+- Timezone preferences: "Use EST timezone", "I'm in India", "My timezone is PST"
+- Response style: "Be concise", "Give detailed explanations", "Use technical language"
+- Default values: "My default project is KAN", "Always assign tickets to me", "Use #general for notifications"
+- Behavioral rules: "Always confirm before sending", "Never delete without asking", "Automatically add labels"
+- Agent-specific rules: "When creating Jira tickets, use high priority", "Add 'needs-review' to all PRs"
+
+**DO NOT treat these as permanent instructions:**
+- One-time requests: "Send this to #general" (without "always")
+- Questions: "What's my timezone?"
+- Regular actions: "Create a ticket", "Send a message"
+- Temporary modifications: "For this task only, use verbose output"
+
+## How to Acknowledge Instructions
+
+When you detect an instruction:
+1. Confirm you understood it: "✓ Got it! I'll remember: [what you'll remember]"
+2. Apply it immediately to the current request if relevant
+3. The system will automatically apply it to future requests
+
+## Instructions Are Applied Automatically
+
+The system maintains two types of instructions:
+1. **Default Instructions** - Applied to EVERY response (timezone, response style)
+2. **Contextual Instructions** - Applied when relevant to the current request (Jira rules when doing Jira tasks)
+
+You'll see these injected into your context - follow them faithfully.
+
 Remember: Your goal is to be genuinely helpful, making users more productive and their work across platforms smoother and more connected. Think carefully, act decisively, and always keep the user's ultimate goal in mind."""
 
         self.model = None
@@ -479,7 +559,16 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         datetime_context = format_datetime_for_prompt()
         prompt += "\n\n" + datetime_context
 
-        # Add explicit user instructions from intelligent instruction memory (highest priority)
+        # ===================================================================
+        # INJECT DEFAULT INSTRUCTIONS (from new unified system)
+        # These are ALWAYS applied to every response
+        # ===================================================================
+        if hasattr(self, 'instruction_memory_system'):
+            default_instructions = self.instruction_memory_system.format_defaults_only()
+            if default_instructions:
+                prompt += "\n\n" + default_instructions
+
+        # Add explicit user instructions from intelligent instruction memory (for backward compatibility)
         if hasattr(self, 'instruction_memory'):
             instruction_prompt = self.instruction_memory.format_for_prompt()
             if instruction_prompt:
@@ -1423,8 +1512,55 @@ Provide a clear instruction describing what you want to accomplish.""",
             parsed_instruction = await self.instruction_parser.parse(user_message)
 
             if parsed_instruction.is_instruction and parsed_instruction.confidence >= 0.5:
-                # Store in instruction memory
+                # Store in old instruction memory (backward compatibility)
                 self.instruction_memory.add(parsed_instruction)
+
+                # ===================================================================
+                # STORE IN NEW UNIFIED INSTRUCTION MEMORY SYSTEM
+                # ===================================================================
+                # Determine if this is a default or contextual instruction
+                is_default = parsed_instruction.category in ['timezone', 'formatting', 'style']
+                category = "default" if is_default else "contextual"
+
+                # Map category to instruction type
+                type_mapping = {
+                    'timezone': 'timezone',
+                    'formatting': 'formatting',
+                    'style': 'response_style',
+                    'default': 'behavior',
+                    'behavior': 'behavior',
+                    'workflow': 'workflow',
+                    'notification': 'notification',
+                }
+                instruction_type = type_mapping.get(parsed_instruction.category, 'behavior')
+
+                # Generate context keywords for contextual instructions
+                context_keywords = []
+                if not is_default:
+                    # Extract keywords from the instruction
+                    keywords = parsed_instruction.value.lower().split()
+                    # Add common trigger words
+                    if 'jira' in parsed_instruction.value.lower():
+                        context_keywords.extend(['jira', 'ticket', 'issue'])
+                    if 'github' in parsed_instruction.value.lower():
+                        context_keywords.extend(['github', 'pr', 'pull request'])
+                    if 'slack' in parsed_instruction.value.lower():
+                        context_keywords.extend(['slack', 'message', 'channel'])
+                    if 'notion' in parsed_instruction.value.lower():
+                        context_keywords.extend(['notion', 'page', 'database'])
+                    # Add the key itself as a keyword
+                    context_keywords.append(parsed_instruction.key)
+
+                # Store in new system
+                await self.instruction_memory_system.store_instruction(
+                    content=f"{parsed_instruction.key}: {parsed_instruction.value}",
+                    category=category,
+                    instruction_type=instruction_type,
+                    context_keywords=context_keywords if context_keywords else None
+                )
+
+                if self.verbose:
+                    print(f"{C.CYAN}📝 Stored in new system: {category}/{instruction_type}{C.ENDC}")
 
                 # Apply specific instruction types
                 if parsed_instruction.category == 'timezone' and parsed_instruction.value:
@@ -1495,7 +1631,31 @@ Provide a clear instruction describing what you want to accomplish.""",
                 if self.verbose:
                     print(f"{C.CYAN}📊 User prefers {preferred_agent} for {self._current_intent_type} tasks{C.ENDC}")
 
-        # Add explicit instructions to message for immediate application
+        # ===================================================================
+        # RETRIEVE AND INJECT CONTEXTUAL INSTRUCTIONS (from new unified system)
+        # These are matched via semantic similarity (RAG) to the current message
+        # ===================================================================
+        if hasattr(self, 'instruction_memory_system'):
+            try:
+                relevant_instructions = await self.instruction_memory_system.get_relevant_instructions(
+                    message=user_message,
+                    top_k=5,
+                    threshold=0.4
+                )
+                if relevant_instructions:
+                    contextual_hints = []
+                    for inst, score in relevant_instructions:
+                        contextual_hints.append(inst.content)
+                    if contextual_hints:
+                        message_to_send += f"\n\n[Relevant User Instructions (matched to this request): {'; '.join(contextual_hints)}]"
+                        if self.verbose:
+                            print(f"{C.CYAN}📝 Matched {len(contextual_hints)} contextual instruction(s) via RAG{C.ENDC}")
+                            for inst, score in relevant_instructions:
+                                print(f"{C.CYAN}   • [{score:.2f}] {inst.content[:50]}...{C.ENDC}")
+            except Exception as e:
+                logger.warning(f"Contextual instruction retrieval error: {e}")
+
+        # Add explicit instructions to message for immediate application (legacy system)
         # This ensures instructions apply to the current message even if stored mid-session
         active_instructions = self.user_prefs.get_explicit_instructions()
         if active_instructions:
