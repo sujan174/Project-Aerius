@@ -31,6 +31,7 @@ class IntentType(Enum):
     COORDINATE = "coordinate"
     WORKFLOW = "workflow"
     SEARCH = "search"
+    INSTRUCT = "instruct"  # User giving explicit instructions/preferences to remember
     UNKNOWN = "unknown"
 
 

@@ -74,6 +74,12 @@ class FastKeywordFilter:
             'confidence_threshold': 0.87,
             'entity_hints': ['team', 'channel', 'person', 'slack', 'email', 'everyone'],
             'bonus_phrases': ['notify the', 'tell the', 'send to', 'post to']
+        },
+        IntentType.INSTRUCT: {
+            'keywords': ['remember', 'always', 'never', 'default', 'prefer', 'use', 'switch', 'change'],
+            'confidence_threshold': 0.88,
+            'entity_hints': ['timezone', 'project', 'assignee', 'channel', 'format', 'style', 'preference', 'setting'],
+            'bonus_phrases': ['from now on', 'remember that', 'always use', 'never use', 'my default', 'set default', 'change to', 'switch to', 'use for all']
         }
     }
 

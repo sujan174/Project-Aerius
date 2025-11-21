@@ -53,6 +53,15 @@ from core.undo_manager import UndoManager, UndoableOperationType
 from core.user_preferences import UserPreferenceManager
 from core.analytics import AnalyticsCollector
 from core.error_messaging import ErrorMessageEnhancer
+from core.datetime_context import (
+    get_datetime_context, set_user_timezone, format_datetime_for_prompt,
+    format_datetime_for_instruction
+)
+
+# Import intelligent instruction system
+from intelligence.instruction_parser import (
+    IntelligentInstructionParser, InstructionMemory, ParsedInstruction
+)
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -251,8 +260,50 @@ class OrchestratorAgent:
                 self.user_prefs.load_from_file(str(self.prefs_file))
                 if self.verbose:
                     print(f"{C.CYAN}📊 Loaded user preferences from {self.prefs_file}{C.ENDC}")
+
+                # Apply saved timezone preference to global datetime context
+                saved_timezone = self.user_prefs.get_instruction_value('timezone')
+                if saved_timezone:
+                    if set_user_timezone(saved_timezone):
+                        if self.verbose:
+                            print(f"{C.CYAN}🕐 Applied saved timezone: {saved_timezone}{C.ENDC}")
             except Exception as e:
                 logger.warning(f"Failed to load preferences: {e}")
+
+        # ===================================================================
+        # INTELLIGENT INSTRUCTION SYSTEM
+        # ===================================================================
+
+        # Initialize intelligent instruction parser (uses LLM for semantic understanding)
+        self.instruction_parser = IntelligentInstructionParser(
+            llm_client=self.llm,
+            verbose=self.verbose
+        )
+
+        # Initialize instruction memory (persistent storage)
+        instructions_file = Path(f"data/instructions/{user_id}.json")
+        instructions_file.parent.mkdir(parents=True, exist_ok=True)
+        self.instruction_memory = InstructionMemory(
+            storage_path=str(instructions_file),
+            verbose=self.verbose
+        )
+
+        # Apply saved instructions (like timezone)
+        saved_timezone = self.instruction_memory.get('timezone')
+        if saved_timezone:
+            if set_user_timezone(saved_timezone):
+                # Always show timezone being applied (important for user awareness)
+                print(f"{C.CYAN}🕐 Applied saved timezone: {saved_timezone}{C.ENDC}")
+
+        # Show loaded instructions count
+        active_count = len(self.instruction_memory.get_all())
+        if active_count > 0:
+            print(f"{C.CYAN}📝 Loaded {active_count} active instruction(s) from {instructions_file}{C.ENDC}")
+            if self.verbose:
+                for key, value in self.instruction_memory.get_all().items():
+                    print(f"{C.CYAN}   • {key}: {value}{C.ENDC}")
+
+        # ===================================================================
 
         # Register undo handlers
         self._register_undo_handlers()
@@ -417,13 +468,24 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         Build system prompt with dynamic user preferences and agent health status.
 
         This enhances the base prompt with:
+        - Current datetime context
         - User communication style preferences
         - Agent health/availability status
         - Learned user patterns
         """
         prompt = self._base_system_prompt
 
-        # Add explicit user instructions (highest priority)
+        # Add current datetime context (important for scheduling, relative times)
+        datetime_context = format_datetime_for_prompt()
+        prompt += "\n\n" + datetime_context
+
+        # Add explicit user instructions from intelligent instruction memory (highest priority)
+        if hasattr(self, 'instruction_memory'):
+            instruction_prompt = self.instruction_memory.format_for_prompt()
+            if instruction_prompt:
+                prompt += "\n\n" + instruction_prompt
+
+        # Also add legacy user preferences instructions (for backward compatibility)
         explicit_instructions = self.user_prefs.get_instructions_for_prompt()
         if explicit_instructions:
             prompt += "\n\n" + explicit_instructions
@@ -493,12 +555,17 @@ Prefer using healthy agents when possible. If a user specifically requests an un
 
         # Define patterns and their extractors
         patterns = [
-            # Timezone patterns
-            (r'(?:from now on\s+)?(?:use|set|switch to)\s+([A-Z]{2,4})\s*(?:time(?:zone)?)?',
+            # Timezone patterns - enhanced for "change timezone to EST" style
+            # Note: Use [a-zA-Z] to match both cases since re.IGNORECASE doesn't affect character classes
+            (r'(?:change|set|switch)\s+(?:my\s+)?timezone\s+to\s+([a-zA-Z]{2,5})',
              'timezone', 'timezone'),
-            (r'my\s+timezone\s+is\s+([A-Z]{2,4})',
+            (r'(?:from now on\s+)?(?:use|set|switch to)\s+([a-zA-Z]{2,5})\s*(?:time(?:zone)?)?',
              'timezone', 'timezone'),
-            (r'(?:from now on\s+)?(?:use|set)\s+([A-Z]{2,4})\s+(?:for\s+)?(?:all\s+)?times?',
+            (r'my\s+timezone\s+is\s+([a-zA-Z]{2,5})',
+             'timezone', 'timezone'),
+            (r'(?:from now on\s+)?(?:use|set)\s+([a-zA-Z]{2,5})\s+(?:for\s+)?(?:all\s+)?times?',
+             'timezone', 'timezone'),
+            (r'timezone\s*[=:]\s*([a-zA-Z]{2,5})',
              'timezone', 'timezone'),
 
             # Default project patterns
@@ -560,6 +627,10 @@ Prefer using healthy agents when possible. If a user specifically requests an un
                 # Special handling for certain categories
                 if category == 'timezone':
                     value = value.upper()
+                    # Also set the global timezone for datetime context
+                    if set_user_timezone(value):
+                        if self.verbose:
+                            print(f"{C.CYAN}🕐 Global timezone set to: {value}{C.ENDC}")
                 elif category == 'formatting' and extracted_key == 'verbosity':
                     # Normalize verbosity values
                     if value in ['concise', 'brief']:
@@ -1025,8 +1096,13 @@ Provide a clear instruction describing what you want to accomplish.""",
 
             # Build full instruction with context
             full_instruction = instruction
+
+            # Inject datetime context for all agents
+            datetime_info = format_datetime_for_instruction()
+            full_instruction = f"{datetime_info}\n\n{full_instruction}"
+
             if context_str:
-                full_instruction = f"Context from previous steps:\n{context_str}\n\nTask: {instruction}"
+                full_instruction = f"Context from previous steps:\n{context_str}\n\nTask: {full_instruction}"
 
             # SIMPLE LOGGING - Log orchestrator -> agent
             self.simple_logger.log_orchestrator_to_agent(agent_name, full_instruction)
@@ -1337,8 +1413,37 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Learn communication style from user message
         self.user_prefs.record_interaction_style(user_message)
 
-        # Detect and store explicit instructions
-        instruction_confirmation = self._detect_and_store_explicit_instruction(user_message)
+        # ===================================================================
+        # INTELLIGENT INSTRUCTION DETECTION
+        # ===================================================================
+
+        # Use intelligent instruction parser (LLM-powered semantic understanding)
+        instruction_confirmation = None
+        try:
+            parsed_instruction = await self.instruction_parser.parse(user_message)
+
+            if parsed_instruction.is_instruction and parsed_instruction.confidence >= 0.5:
+                # Store in instruction memory
+                self.instruction_memory.add(parsed_instruction)
+
+                # Apply specific instruction types
+                if parsed_instruction.category == 'timezone' and parsed_instruction.value:
+                    if set_user_timezone(parsed_instruction.value):
+                        if self.verbose:
+                            print(f"{C.CYAN}🕐 Global timezone set to: {parsed_instruction.value}{C.ENDC}")
+
+                # Generate confirmation
+                instruction_confirmation = (
+                    f"✓ Got it! I'll remember: {parsed_instruction.key} = {parsed_instruction.value}"
+                )
+
+                if self.verbose:
+                    print(f"{C.GREEN}{instruction_confirmation}{C.ENDC}")
+
+        except Exception as e:
+            logger.warning(f"Instruction parsing error: {e}")
+            # Fall back to old regex method if intelligent parsing fails
+            instruction_confirmation = self._detect_and_store_explicit_instruction(user_message)
 
         # ===================================================================
 
@@ -1914,6 +2019,21 @@ Provide a clear instruction describing what you want to accomplish.""",
             undo_stats = self.undo_manager.get_statistics()
             if undo_stats['total_operations'] > 0:
                 print(f"{C.CYAN}  ↩️  Undo: {undo_stats['available_for_undo']} operations available{C.ENDC}")
+
+        # Display instruction memory statistics
+        if hasattr(self, 'instruction_memory') and self.verbose:
+            active_instructions = self.instruction_memory.get_all()
+            if active_instructions:
+                print(f"{C.CYAN}  📝 Instructions: {len(active_instructions)} active{C.ENDC}")
+                for key, value in list(active_instructions.items())[:3]:
+                    print(f"{C.CYAN}     • {key}: {value}{C.ENDC}")
+
+        # Display instruction parser statistics
+        if hasattr(self, 'instruction_parser') and self.verbose:
+            stats = self.instruction_parser.get_statistics()
+            if stats['total_parses'] > 0:
+                print(f"{C.CYAN}  🔍 Instruction Parser: {stats['instructions_found']}/{stats['total_parses']} detected{C.ENDC}")
+                print(f"{C.CYAN}     Fast path: {stats['fast_path_rate']} | LLM calls: {stats['llm_call_rate']} | Cache: {stats['cache_hit_rate']}{C.ENDC}")
 
         # Display Hybrid Intelligence statistics
         if hasattr(self, 'hybrid_intelligence') and self.verbose:

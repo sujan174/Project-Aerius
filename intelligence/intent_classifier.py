@@ -93,6 +93,11 @@ class IntentClassifier:
                 'primary': ['when', 'if', 'then', 'automate', 'trigger', 'schedule'],
                 'secondary': ['set up automation', 'create workflow'],
                 'modifiers': []
+            },
+            IntentType.INSTRUCT: {
+                'primary': ['remember', 'always', 'never', 'default', 'prefer', 'use', 'switch', 'change'],
+                'secondary': ['from now on', 'remember that', 'set my', 'use for all'],
+                'modifiers': ['timezone', 'project', 'assignee', 'channel', 'format', 'style', 'preference', 'setting']
             }
         }
 
