@@ -25,7 +25,6 @@ from .base_types import (
     Entity, EntityType, EntityRelationship, EntityGraph,
     RelationType, create_entity_id
 )
-from .cache_layer import get_global_cache
 
 
 class EntityExtractor:
@@ -52,7 +51,6 @@ class EntityExtractor:
         """
         self.llm_client = llm_client
         self.verbose = verbose
-        self.cache = get_global_cache()
 
         # Metrics
         self.extractions = 0

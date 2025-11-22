@@ -21,7 +21,6 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
 from .base_types import Intent, IntentType, Entity, EntityType
-from .cache_layer import get_global_cache, CacheKeyBuilder
 
 
 @dataclass
@@ -113,7 +112,7 @@ IMPORTANT: Return ONLY valid JSON. No additional text."""
         """
         self.llm_client = llm_client
         self.verbose = verbose
-        self.cache = get_global_cache()
+        self._cache: Dict[str, Any] = {}  # Simple in-memory cache
 
         # Performance metrics
         self.total_classifications = 0
@@ -147,9 +146,9 @@ IMPORTANT: Return ONLY valid JSON. No additional text."""
         start_time = time.time()
         self.total_classifications += 1
 
-        # Check cache first (exact match)
-        cache_key = CacheKeyBuilder.for_intent_classification(message)
-        cached = self.cache.get(cache_key)
+        # Check simple cache first (exact match)
+        cache_key = f"intent:{hash(message.lower().strip())}"
+        cached = self._cache.get(cache_key)
 
         if cached:
             self.cache_hits += 1
@@ -216,8 +215,8 @@ IMPORTANT: Return ONLY valid JSON. No additional text."""
 
         result = LLMClassificationResult(**result_data)
 
-        # Cache for future use (5 minute TTL)
-        self.cache.set(cache_key, result_data, ttl_seconds=300)
+        # Cache for future use (simple in-memory cache)
+        self._cache[cache_key] = result_data
 
         if self.verbose:
             print(f"[LLM CLASSIFIER] LLM classification in {latency_ms:.1f}ms (confidence: {result.confidence:.2f})")

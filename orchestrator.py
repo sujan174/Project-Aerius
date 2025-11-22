@@ -60,11 +60,8 @@ from intelligence.instruction_parser import (
     IntelligentInstructionParser, ParsedInstruction
 )
 
-# Import episodic memory store and session storage
-from core.memory_store import EpisodicMemoryStore, ConversationSessionStore
-
-# Import intelligent memory system (v2.0 - semantic understanding)
-from core.intelligent_memory import IntelligentMemory
+# Import unified memory system (consolidates all memory systems)
+from core.unified_memory import UnifiedMemory, MemoryIntentType
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -268,31 +265,21 @@ class OrchestratorAgent:
         # EPISODIC MEMORY STORE
         # ===================================================================
 
-        # Initialize episodic memory store for long-term context
-        self.memory_store = EpisodicMemoryStore(
-            persist_directory="data/memory",
-            verbose=self.verbose
-        )
-
-        # Initialize conversation session store for cross-session context
-        self.session_store = ConversationSessionStore(
-            storage_path="data/conversation_sessions.json",
-            max_sessions=7,
-            verbose=self.verbose
-        )
-        self.session_store.start_session(self.session_id)
-
         # ===================================================================
-        # INTELLIGENT MEMORY SYSTEM v2.0
+        # UNIFIED MEMORY SYSTEM v1.0
+        # Consolidates: EpisodicMemory + SessionStore + IntelligentMemory
+        # Features: Tiered injection, memory intent detection, consolidation
         # ===================================================================
 
-        # Initialize intelligent memory (semantic understanding, entity graph, smart context)
-        self.intelligent_memory = IntelligentMemory(
+        self.unified_memory = UnifiedMemory(
             llm_client=self.llm,
-            storage_dir="data/intelligent_memory",
+            storage_dir="data/unified_memory",
             verbose=self.verbose
         )
-        self.intelligent_memory.start_session(self.session_id)
+        self.unified_memory.start_session(self.session_id)
+
+        # Core facts are loaded from unified_memory's own persistence
+        # Don't copy from instruction_memory as it may have incorrectly parsed data
 
         # Track current turn data for episode storage
         self._current_turn_data = {
@@ -310,21 +297,39 @@ class OrchestratorAgent:
 
         # ===================================================================
 
-        # Load saved timezone from preferences, or default to IST
-        # Check both direct key and category-based lookup for robustness
-        saved_timezone = self.instruction_memory.get('timezone')
+        # Load saved timezone - check unified memory first, then instruction memory
+        saved_timezone = None
+
+        # 1. Check unified memory core facts first (most reliable)
+        if hasattr(self, 'unified_memory'):
+            saved_timezone = self.unified_memory.get_core_fact('timezone')
+
+        # 2. Fall back to instruction memory
         if not saved_timezone:
-            # Try category-based lookup in case key differs
-            tz_instructions = self.instruction_memory.get_all(category='timezone')
-            if tz_instructions:
-                saved_timezone = list(tz_instructions.values())[0]
+            saved_timezone = self.instruction_memory.get('timezone')
+
+        # 3. Try to extract timezone from instruction values
+        if not saved_timezone:
+            for key, value in self.instruction_memory.get_all().items():
+                # Check if value contains timezone abbreviations
+                import re
+                tz_match = re.search(r'\b(IST|EST|PST|CST|MST|UTC|GMT)\b', str(value).upper())
+                if tz_match:
+                    saved_timezone = tz_match.group(1)
+                    break
 
         if saved_timezone:
             set_user_timezone(saved_timezone)
+            # Also save to unified memory for future sessions
+            if hasattr(self, 'unified_memory'):
+                self.unified_memory.set_core_fact('timezone', saved_timezone, 'preference', 'loaded')
             if self.verbose:
                 print(f"{C.CYAN}🕐 Loaded timezone from preferences: {saved_timezone}{C.ENDC}")
         else:
             set_user_timezone('IST')
+            # Save default to unified memory
+            if hasattr(self, 'unified_memory'):
+                self.unified_memory.set_core_fact('timezone', 'IST', 'preference', 'default')
             if self.verbose:
                 print(f"{C.CYAN}🕐 Default timezone: IST (Asia/Kolkata){C.ENDC}")
 
@@ -500,15 +505,9 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         datetime_context = format_datetime_for_prompt()
         prompt += "\n\n" + datetime_context
 
-        # Add episodic memory context (relevant past interactions)
+        # Add unified memory context (core facts + sessions + episodic)
         if memory_context:
             prompt += "\n\n" + memory_context
-
-        # Add previous session context (last 7 conversations)
-        if hasattr(self, 'session_store'):
-            session_context = self.session_store.format_for_prompt()
-            if session_context:
-                prompt += "\n\n" + session_context
 
         # Add explicit user instructions from intelligent instruction memory (highest priority)
         if hasattr(self, 'instruction_memory'):
@@ -559,74 +558,56 @@ Prefer using healthy agents when possible. If a user specifically requests an un
         return prompt
 
     # =========================================================================
-    # EPISODIC MEMORY METHODS
+    # UNIFIED MEMORY METHODS
     # =========================================================================
 
     async def _retrieve_memory_context(self, user_message: str) -> str:
         """
-        Retrieve relevant memory context for current message.
+        Retrieve relevant memory context using unified memory system.
 
-        Combines:
-        - Intelligent memory (entity graph, past sessions)
-        - Episodic memory (semantic similarity search)
+        Uses tiered injection:
+        - ALWAYS: Core facts (timezone, name, defaults)
+        - SOMETIMES: Last session (if relevant)
+        - ON-DEMAND: Full semantic search (for recall queries)
 
         Called at start of process_message(), before intelligence analysis.
         """
-        context_parts = []
-
-        # 1. Get intelligent memory context (entities + sessions)
         try:
-            intelligent_context = self.intelligent_memory.get_context_for_message(user_message)
-            if intelligent_context:
-                context_parts.append(intelligent_context)
-        except Exception as e:
-            if self.verbose:
-                print(f"[ORCHESTRATOR] Intelligent memory failed: {e}")
+            context, memory_query = await self.unified_memory.get_context(user_message)
 
-        # 2. Get episodic memory context (semantic search)
-        try:
-            episodes = await self.memory_store.retrieve_relevant(
-                query=user_message,
-                n_results=3,  # Reduced since we now have intelligent memory
-                min_similarity=0.75
-            )
+            # Log memory intent for debugging
+            if self.verbose and memory_query.intent_type != MemoryIntentType.NONE:
+                print(f"[MEMORY] Detected intent: {memory_query.intent_type.value}")
 
-            if episodes:
-                context_parts.append(self.memory_store.format_for_prompt(episodes))
+            return context
 
         except Exception as e:
             if self.verbose:
-                print(f"[ORCHESTRATOR] Episodic memory failed: {e}")
+                print(f"[ORCHESTRATOR] Unified memory failed: {e}")
+            return ""
 
-        return "\n\n".join(context_parts)
-
-    async def _store_episode(
+    async def _store_in_memory(
         self,
         user_message: str,
         final_response: str,
         agents_used: List[str],
-        intent_type: str,
-        entities: List[Dict],
-        success: bool = True
+        intent_type: str
     ):
         """
-        Store interaction as episodic memory.
+        Store interaction in unified memory.
 
         Called at end of process_message() after generating response.
         """
         try:
-            await self.memory_store.add_episode(
+            await self.unified_memory.add_message(
                 user_message=user_message,
-                agent_response=final_response[:500],  # Truncate long responses
+                response=final_response[:500],
                 agents_used=agents_used,
-                intent_type=intent_type,
-                entities=entities,
-                success=success,
-                llm_client=self.llm
+                intent_type=intent_type
             )
         except Exception as e:
             if self.verbose:
-                print(f"[ORCHESTRATOR] Episode storage failed: {e}")
+                print(f"[ORCHESTRATOR] Memory storage failed: {e}")
 
     # =========================================================================
     # CORRECTION DETECTION AND LEARNING
@@ -825,6 +806,9 @@ Examples:
                     if set_user_timezone(value):
                         if self.verbose:
                             print(f"{C.CYAN}🕐 Global timezone set to: {value}{C.ENDC}")
+                        # Store in unified memory as core fact
+                        if hasattr(self, 'unified_memory'):
+                            self.unified_memory.set_core_fact('timezone', value, 'preference', 'explicit')
                 elif category == 'formatting' and extracted_key == 'verbosity':
                     # Normalize verbosity values
                     if value in ['concise', 'brief']:
@@ -1633,11 +1617,30 @@ Provide a clear instruction describing what you want to accomplish.""",
                     if set_user_timezone(parsed_instruction.value):
                         if self.verbose:
                             print(f"{C.CYAN}🕐 Global timezone set to: {parsed_instruction.value}{C.ENDC}")
+                        # Store in unified memory as core fact
+                        if hasattr(self, 'unified_memory'):
+                            self.unified_memory.set_core_fact('timezone', parsed_instruction.value, 'preference', 'explicit')
                         # Clear confirmation for timezone - will be shown via context
                         instruction_confirmation = f"🕐 Timezone set to {parsed_instruction.value}"
                         self.instruction_memory.add(parsed_instruction)
+                elif parsed_instruction.category == 'identity' and parsed_instruction.value:
+                    # Store identity information (name, role, etc.)
+                    if hasattr(self, 'unified_memory'):
+                        key = parsed_instruction.key or 'user_name'
+                        self.unified_memory.set_core_fact(key, parsed_instruction.value, 'identity', 'explicit')
+                        instruction_confirmation = f"👤 {key.replace('_', ' ').title()} set to {parsed_instruction.value}"
+                        if self.verbose:
+                            print(f"{C.CYAN}👤 Identity saved: {key} = {parsed_instruction.value}{C.ENDC}")
+                    self.instruction_memory.add(parsed_instruction)
+                elif parsed_instruction.category == 'default' and parsed_instruction.key and parsed_instruction.value:
+                    # Store default values (project, assignee, etc.)
+                    if hasattr(self, 'unified_memory'):
+                        self.unified_memory.set_core_fact(parsed_instruction.key, parsed_instruction.value, 'default', 'explicit')
+                        if self.verbose:
+                            print(f"{C.CYAN}📋 Default saved: {parsed_instruction.key} = {parsed_instruction.value}{C.ENDC}")
+                    self.instruction_memory.add(parsed_instruction)
                 else:
-                    # Store in instruction memory for non-timezone instructions
+                    # Store in instruction memory for other instructions
                     self.instruction_memory.add(parsed_instruction)
 
                     # Generate confirmation for other instruction types
@@ -1652,6 +1655,56 @@ Provide a clear instruction describing what you want to accomplish.""",
             logger.warning(f"Instruction parsing error: {e}")
             # Fall back to old regex method if intelligent parsing fails
             instruction_confirmation = self._detect_and_store_explicit_instruction(user_message)
+
+        # Pattern-based fallback detection for miscategorized instructions
+        # This catches cases where the parser returns wrong category (e.g., 'default' instead of 'timezone')
+        import re
+
+        # Fallback timezone detection - always check for timezone patterns
+        # This catches cases where instruction parser miscategorizes timezone updates
+        if hasattr(self, 'unified_memory'):
+            # Look for timezone patterns in user message (always check, even if timezone exists)
+            tz_patterns = [
+                r'\b(?:use|set|switch to|change to)\s+(\w+)\s+(?:timezone|time\s*zone|from now|going forward)',
+                r'\b(IST|EST|PST|CST|MST|UTC|GMT|PDT|EDT|CDT|MDT)\b.*(?:from now|timezone|time)',
+                r'(?:timezone|time\s*zone).*\b(IST|EST|PST|CST|MST|UTC|GMT|PDT|EDT|CDT|MDT)\b',
+            ]
+            for pattern in tz_patterns:
+                match = re.search(pattern, user_message, re.IGNORECASE)
+                if match:
+                    detected_tz = match.group(1).upper()
+                    if detected_tz in ['IST', 'EST', 'PST', 'CST', 'MST', 'UTC', 'GMT', 'PDT', 'EDT', 'CDT', 'MDT']:
+                        current_tz = self.unified_memory.get_core_fact('timezone')
+                        # Only update if different from current or no current set
+                        if not current_tz or current_tz != detected_tz:
+                            if set_user_timezone(detected_tz):
+                                self.unified_memory.set_core_fact('timezone', detected_tz, 'preference', 'pattern_fallback')
+                                if self.verbose:
+                                    print(f"{C.CYAN}🕐 Timezone detected (fallback): {detected_tz}{C.ENDC}")
+                                if not instruction_confirmation:
+                                    instruction_confirmation = f"🕐 Timezone set to {detected_tz}"
+                        break
+
+        # Fallback name/identity detection
+        if hasattr(self, 'unified_memory'):
+            current_name = self.unified_memory.get_core_fact('user_name')
+            if not current_name:
+                # Look for name patterns in user message
+                name_patterns = [
+                    r"(?:my name is|i'm|i am|call me|name's)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+                    r"(?:this is|it's)\s+([A-Z][a-z]+)(?:\s+here)?",
+                ]
+                for pattern in name_patterns:
+                    match = re.search(pattern, user_message, re.IGNORECASE)
+                    if match:
+                        detected_name = match.group(1).strip().title()
+                        if len(detected_name) >= 2 and len(detected_name) <= 50:
+                            self.unified_memory.set_core_fact('user_name', detected_name, 'identity', 'pattern_fallback')
+                            if self.verbose:
+                                print(f"{C.CYAN}👤 Name detected (fallback): {detected_name}{C.ENDC}")
+                            if not instruction_confirmation:
+                                instruction_confirmation = f"👤 Name set to {detected_name}"
+                            break
 
         # ===================================================================
 
@@ -2037,39 +2090,17 @@ Provide a clear instruction describing what you want to accomplish.""",
         # ===================================================================
 
         # Store this interaction as episodic memory
-        await self._store_episode(
+        # ===================================================================
+        # UNIFIED MEMORY STORAGE
+        # ===================================================================
+
+        # Store interaction in unified memory (handles everything)
+        await self._store_in_memory(
             user_message=user_message,
             final_response=final_response,
             agents_used=self._current_turn_data['agents_used'],
-            intent_type=self._current_turn_data.get('intent', 'unknown'),
-            entities=self._current_turn_data.get('entities', []),
-            success=True
+            intent_type=self._current_turn_data.get('intent', 'unknown')
         )
-
-        # ===================================================================
-        # INTELLIGENT MEMORY PROCESSING
-        # ===================================================================
-
-        # Process with intelligent memory (semantic extraction, entity graph update)
-        if hasattr(self, 'intelligent_memory'):
-            try:
-                await self.intelligent_memory.process_message(
-                    user_message=user_message,
-                    response=final_response,
-                    agents_used=self._current_turn_data['agents_used'],
-                    action_result={'success': True}
-                )
-            except Exception as e:
-                if self.verbose:
-                    print(f"[ORCHESTRATOR] Intelligent memory processing failed: {e}")
-
-        # Add to conversation session store for cross-session context
-        if hasattr(self, 'session_store'):
-            self.session_store.add_message(
-                user_message=user_message,
-                response=final_response,
-                agents_used=self._current_turn_data['agents_used']
-            )
 
         # Reinforce preferences if this wasn't a correction (implicit acceptance)
         if not is_correction:
@@ -2306,33 +2337,20 @@ Provide a clear instruction describing what you want to accomplish.""",
                 print(f"{C.CYAN}  🔍 Instruction Parser: {stats['instructions_found']}/{stats['total_parses']} detected{C.ENDC}")
                 print(f"{C.CYAN}     Fast path: {stats['fast_path_rate']} | LLM calls: {stats['llm_call_rate']} | Cache: {stats['cache_hit_rate']}{C.ENDC}")
 
-        # Display episodic memory statistics
-        if hasattr(self, 'memory_store') and self.verbose:
-            stats = self.memory_store.get_statistics()
-            if stats['total_episodes'] > 0 or stats['episodes_stored_this_session'] > 0:
-                print(f"{C.CYAN}  🧠 Episodic Memory: {stats['total_episodes']} total episodes{C.ENDC}")
-                print(f"{C.CYAN}     This session: +{stats['episodes_stored_this_session']} stored, {stats['queries_made']} queries{C.ENDC}")
-                print(f"{C.CYAN}     Embedding cache: {stats['embedding_cache_size']} entries, {stats['cache_hits']} hits{C.ENDC}")
-
-        # End and save conversation session
-        if hasattr(self, 'session_store'):
+        # End unified memory session and display statistics
+        if hasattr(self, 'unified_memory'):
             try:
-                await self.session_store.end_session(llm_client=self.llm)
+                await self.unified_memory.end_session()
                 if self.verbose:
-                    sessions = self.session_store.get_recent_sessions()
-                    print(f"{C.CYAN}  💬 Session Store: {len(sessions)} sessions saved{C.ENDC}")
+                    stats = self.unified_memory.get_statistics()
+                    print(f"{C.CYAN}  🧠 Unified Memory Statistics:{C.ENDC}")
+                    print(f"{C.CYAN}     Core facts: {stats['core_facts']} | Consolidated: {stats['consolidated_facts']}{C.ENDC}")
+                    print(f"{C.CYAN}     Sessions: {stats['sessions']} | Entities: {stats['entities']}{C.ENDC}")
+                    print(f"{C.CYAN}     Episodes: {stats['episodes']} | Queries: {stats['queries']}{C.ENDC}")
+                    if stats['consolidations'] > 0:
+                        print(f"{C.GREEN}     ✓ {stats['consolidations']} consolidations performed{C.ENDC}")
             except Exception as e:
-                logger.warning(f"Failed to end session: {e}")
-
-        # End intelligent memory session
-        if hasattr(self, 'intelligent_memory'):
-            try:
-                await self.intelligent_memory.end_session()
-                if self.verbose:
-                    stats = self.intelligent_memory.get_statistics()
-                    print(f"{C.CYAN}  🧠 Intelligent Memory: {stats['total_entities']} entities, {stats['total_sessions']} sessions{C.ENDC}")
-            except Exception as e:
-                logger.warning(f"Failed to end intelligent memory session: {e}")
+                logger.warning(f"Failed to end unified memory session: {e}")
 
         # Display Hybrid Intelligence statistics
         if hasattr(self, 'hybrid_intelligence') and self.verbose:

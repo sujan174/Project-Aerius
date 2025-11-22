@@ -19,7 +19,6 @@ Version: 3.0 - Major refactoring with LLM support
 import re
 from typing import List, Dict, Optional, Any, Tuple
 from .base_types import Intent, IntentType
-from .cache_layer import get_global_cache, CacheKeyBuilder
 
 
 class IntentClassifier:
@@ -45,12 +44,10 @@ class IntentClassifier:
         self.llm_client = llm_client
         self.use_llm = use_llm
         self.verbose = verbose
-        self.cache = get_global_cache()
 
         # Metrics
         self.keyword_classifications = 0
         self.llm_classifications = 0
-        self.cache_hits = 0
 
         # Intent keyword mappings (hierarchical)
         self.intent_keywords = {
@@ -363,36 +360,6 @@ class IntentClassifier:
     # ENHANCED METHODS - V3.0
     # ========================================================================
 
-    def classify_with_cache(self, message: str) -> List[Intent]:
-        """
-        Classify with caching support
-
-        Checks cache first, then falls back to classification.
-
-        Args:
-            message: User message
-
-        Returns:
-            List of detected intents
-        """
-        cache_key = CacheKeyBuilder.for_intent_classification(message)
-
-        # Try cache first
-        cached_result = self.cache.get(cache_key)
-        if cached_result is not None:
-            self.cache_hits += 1
-            if self.verbose:
-                print(f"[INTENT] Cache hit for message")
-            return cached_result
-
-        # Classify
-        intents = self.classify(message)
-
-        # Cache result
-        self.cache.set(cache_key, intents, ttl_seconds=300)  # 5 minute TTL
-
-        return intents
-
     def classify_with_llm(self, message: str, context: Optional[Dict] = None) -> List[Intent]:
         """
         Classify intents using LLM for better semantic understanding
@@ -680,7 +647,6 @@ Response:"""
         return {
             'keyword_classifications': self.keyword_classifications,
             'llm_classifications': self.llm_classifications,
-            'cache_hits': self.cache_hits,
             'total_classifications': self.keyword_classifications + self.llm_classifications,
         }
 
@@ -688,4 +654,3 @@ Response:"""
         """Reset metrics"""
         self.keyword_classifications = 0
         self.llm_classifications = 0
-        self.cache_hits = 0

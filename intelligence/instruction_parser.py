@@ -13,8 +13,6 @@ import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 
-from .cache_layer import IntelligentCache
-
 
 @dataclass
 class ParsedInstruction:
@@ -69,8 +67,8 @@ class IntelligentInstructionParser:
         self.llm = llm_client
         self.verbose = verbose
 
-        # Cache for parsed instructions (avoid re-parsing similar messages)
-        self.cache = IntelligentCache(max_size=100, default_ttl_seconds=300)
+        # Simple cache for parsed instructions (avoid re-parsing similar messages)
+        self._cache: Dict[str, Any] = {}
 
         # Statistics
         self.total_parses = 0
@@ -97,7 +95,7 @@ class IntelligentInstructionParser:
 
         # Check cache first (O(1) lookup)
         cache_key = f"instruction:{hash(message.lower().strip())}"
-        cached = self.cache.get(cache_key)
+        cached = self._cache.get(cache_key)
         if cached:
             self.cache_hits += 1
             return cached
@@ -115,7 +113,7 @@ class IntelligentInstructionParser:
                 confidence=0.95,
                 reasoning="No instruction keywords detected (fast path)"
             )
-            self.cache.set(cache_key, result)
+            self._cache[cache_key] = result
             return result
 
         # STEP 2: Only call LLM for likely instructions (~5-10% of messages)
@@ -130,7 +128,7 @@ class IntelligentInstructionParser:
             self.instructions_found += 1
 
         # Cache the result
-        self.cache.set(cache_key, result)
+        self._cache[cache_key] = result
 
         if self.verbose:
             latency = (time.time() - start_time) * 1000
