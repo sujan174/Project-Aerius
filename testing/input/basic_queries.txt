@@ -1,6 +1,41 @@
-# Basic Query Test
-# Tests fundamental orchestrator capabilities
+# ==========================================
+# PROJECT FRIDAY - COMPREHENSIVE SYSTEM TEST
+# Scope: Jira, Slack, Calendar, Orchestration
+# ==========================================
 
-What time is it?
-What is my timezone?
-What agents are available?
+# 1. SYSTEM HEALTH CHECK
+# ----------------------
+What agents are currently loaded and available?
+What is my configured timezone?
+My email is h.sujan2004@gmail.com
+
+# 2. JIRA AGENT TEST (Lifecycle)
+# ------------------------------
+# Create a new issue
+Create a Jira bug in project KAN with summary "Mobile app crashes on startup" and description "Happens on iOS 16 devices during splash screen." priority High.
+
+# Verify creation and context retention
+What is the key of the Jira issue I just created?
+
+# Update the issue
+Assign that issue to me and add a comment saying "I have reproduced this on the simulator."
+
+# 3. GOOGLE CALENDAR AGENT TEST
+# -----------------------------
+# Check availability (Read)
+What meetings do I have scheduled for tomorrow?
+
+# Schedule an event (Write)
+Schedule a "Mobile Crash Debugging" session for tomorrow at 2pm for 1 hour if its clashing, schedule it for 1 hour before it .
+
+# 4. SLACK AGENT TEST
+# -------------------
+# Send a direct notification
+Send a message to #dev-opps saying "I'm investigating the iOS crash report (KAN-123)."
+
+# 5. COMPLEX MULTI-AGENT WORKFLOW
+# -------------------------------
+# This tests the Orchestrator's ability to break down tasks and pass context (SharedContext)
+# It requires: Calendar (check time) -> Jira (create task) -> Slack (notify with details)
+
+Check my calendar for Friday morning. If I'm free at 10am, create a Jira task for "Weekly Sync" and notify the #dev-opps channel that the meeting is set for that time with the Jira ticket linked.

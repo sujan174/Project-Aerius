@@ -189,7 +189,7 @@ class GeminiFlash(BaseLLM):
         # Default configuration
         if config is None:
             config = LLMConfig(
-                model_name='models/gemini-3.0-flash',
+                model_name='models/gemini-3-pro-preview',
                 temperature=0.7,
                 top_p=0.95,
                 top_k=40
