@@ -967,6 +967,57 @@ Remember: Calendar management is about respecting time - the most finite resourc
                 print(f"[GOOGLE CALENDAR AGENT] Warning: Metadata prefetch failed: {e}")
             print(f"[GOOGLE CALENDAR AGENT] Continuing without metadata cache")
 
+    def _convert_times_to_user_timezone(self, text: str) -> str:
+        """
+        Convert all ISO datetime strings in text from UTC to user's timezone.
+
+        This ensures the LLM sees times already in the correct timezone,
+        rather than relying on it to do timezone math.
+
+        Args:
+            text: Text containing ISO datetime strings (e.g., from API response)
+
+        Returns:
+            Text with all datetimes converted to user's timezone
+        """
+        import re
+
+        # Get user's timezone
+        try:
+            tz_name = Config.USER_TIMEZONE
+            user_tz = zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            # If timezone is invalid, don't convert
+            return text
+
+        # Pattern to match ISO datetime strings (with Z or +00:00 for UTC)
+        # Matches: 2025-11-23T07:30:00Z, 2025-11-23T07:30:00+00:00, 2025-11-23T07:30:00.000Z
+        iso_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))'
+
+        def convert_match(match):
+            iso_str = match.group(1)
+            try:
+                # Parse the ISO datetime
+                dt_str = iso_str.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(dt_str)
+
+                # Convert to user's timezone
+                dt_local = dt.astimezone(user_tz)
+
+                # Format in a readable way with timezone abbreviation
+                # Return ISO format but with the correct timezone
+                return dt_local.isoformat()
+            except Exception:
+                # If conversion fails, return original
+                return iso_str
+
+        converted_text = re.sub(iso_pattern, convert_match, text)
+
+        if self.verbose and converted_text != text:
+            print(f"[GOOGLE CALENDAR AGENT] Converted times to {tz_name}")
+
+        return converted_text
+
     def _get_current_time_context(self) -> Dict:
         """
         Get current time, date, and timezone information.
@@ -1345,6 +1396,10 @@ Remember: Calendar management is about respecting time - the most finite resourc
                 result_text = "\n".join(result_content)
                 if not result_text:
                     result_text = json.dumps(tool_result.content, default=str)
+
+                # Convert all times in the result to user's timezone
+                # This ensures the LLM doesn't need to do timezone math
+                result_text = self._convert_times_to_user_timezone(result_text)
 
                 if self.verbose:
                     print(f"[GOOGLE CALENDAR AGENT] Result: {result_text[:500]}")
