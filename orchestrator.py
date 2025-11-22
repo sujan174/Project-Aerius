@@ -32,7 +32,7 @@ from intelligence import (
 from intelligence.hybrid_system import HybridIntelligenceSystem, HybridIntelligenceResult
 
 # Import terminal UI
-from ui.terminal_ui import TerminalUI, Colors as C_NEW, Icons
+from ui.terminal_ui import TerminalUI
 
 # Import production utilities
 from config import Config
@@ -41,10 +41,7 @@ from core.input_validator import InputValidator
 from core.error_handler import ErrorClassifier, format_error_for_user, DuplicateOperationDetector
 
 # Import observability system
-from core.observability import (
-    initialize_observability, get_observability,
-    traced_span, SpanKind, start_trace, end_trace
-)
+from core.observability import initialize_observability, get_observability
 
 # Import new enhancement systems
 from core.retry_manager import RetryManager
@@ -1636,14 +1633,17 @@ Provide a clear instruction describing what you want to accomplish.""",
                     if set_user_timezone(parsed_instruction.value):
                         if self.verbose:
                             print(f"{C.CYAN}🕐 Global timezone set to: {parsed_instruction.value}{C.ENDC}")
+                        # Clear confirmation for timezone - will be shown via context
+                        instruction_confirmation = f"🕐 Timezone set to {parsed_instruction.value}"
+                        self.instruction_memory.add(parsed_instruction)
+                else:
+                    # Store in instruction memory for non-timezone instructions
+                    self.instruction_memory.add(parsed_instruction)
 
-                # Store in instruction memory (after any key normalization)
-                self.instruction_memory.add(parsed_instruction)
-
-                # Generate confirmation
-                instruction_confirmation = (
-                    f"✓ Got it! I'll remember: {parsed_instruction.key} = {parsed_instruction.value}"
-                )
+                    # Generate confirmation for other instruction types
+                    instruction_confirmation = (
+                        f"✓ Noted: {parsed_instruction.key} = {parsed_instruction.value}"
+                    )
 
                 if self.verbose:
                     print(f"{C.GREEN}{instruction_confirmation}{C.ENDC}")

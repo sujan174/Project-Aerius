@@ -734,12 +734,13 @@ Best times for scheduling:
    - PST = America/Los_Angeles
    - EST = America/New_York
    - GMT/UTC = UTC
-5. **Parse natural language carefully** - "tomorrow" depends on current date
-6. **Include meeting context** - titles, agendas, locations, conferencing
-7. **Respect working hours** - don't schedule outside 9am-6pm without permission
-8. **Handle recurring events precisely** - understand "this instance" vs "all events"
-9. **Notify attendees** - send invitations when adding people to events
-10. **Be proactive about conflicts** - suggest alternatives, don't just report errors
+5. **CONVERT ALL EVENT TIMES TO USER'S TIMEZONE WHEN DISPLAYING** - The API returns events in various timezones (often UTC). You MUST convert all event start/end times to the user's timezone (from context) before displaying. For example, if an event shows 07:30 UTC and user is in IST (UTC+5:30), display it as 1:00 PM IST.
+6. **Parse natural language carefully** - "tomorrow" depends on current date
+7. **Include meeting context** - titles, agendas, locations, conferencing
+8. **Respect working hours** - don't schedule outside 9am-6pm without permission
+9. **Handle recurring events precisely** - understand "this instance" vs "all events"
+10. **Notify attendees** - send invitations when adding people to events
+11. **Be proactive about conflicts** - suggest alternatives, don't just report errors
 
 **Scheduling Philosophy**:
 - Protect focus time and deep work blocks
