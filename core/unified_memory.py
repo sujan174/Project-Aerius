@@ -23,6 +23,8 @@ from pathlib import Path
 from collections import defaultdict
 from enum import Enum
 
+import asyncio
+import aiofiles
 import chromadb
 from chromadb.config import Settings
 import google.generativeai as genai
@@ -128,8 +130,16 @@ class UnifiedMemory:
         # ChromaDB for semantic search
         self._init_vector_store()
 
-        # Embedding cache
+        # Embedding cache (loaded from disk for persistence)
         self._embedding_cache: Dict[str, List[float]] = {}
+        self._load_embedding_cache()
+
+        # Pending episodes queue (for batch processing at session end)
+        self._pending_episodes: List[Dict] = []
+
+        # Dirty flags for batched writes
+        self._core_facts_dirty: bool = False
+        self._entities_dirty: bool = False
 
         # Stats
         self.stats = {
@@ -137,7 +147,8 @@ class UnifiedMemory:
             'cache_hits': 0,
             'consolidations': 0,
             'merges': 0,  # Semantic deduplication merges
-            'coreferences_resolved': 0  # Entity coreference resolutions
+            'coreferences_resolved': 0,  # Entity coreference resolutions
+            'sessions_since_consolidation': 0  # For debouncing consolidation
         }
 
         if self.verbose:
@@ -198,7 +209,8 @@ class UnifiedMemory:
             source=source
         )
 
-        self._save_core_facts()
+        # Mark dirty for batch save at session end
+        self._core_facts_dirty = True
 
         if self.verbose:
             print(f"[CORE FACT] Set {key} = {value} ({category}, {source})")
@@ -470,6 +482,9 @@ class UnifiedMemory:
         if not self.current_session or not self.current_session['messages']:
             return
 
+        # Flush all pending episodes (batch embedding + storage)
+        await self._flush_episodes()
+
         # Create session summary
         session_data = {
             'session_id': self.current_session['session_id'],
@@ -490,7 +505,22 @@ class UnifiedMemory:
         if len(self.sessions) > 10:
             self.sessions = self.sessions[-10:]
 
-        self._save_sessions()
+        # Parallel async saves for performance
+        save_tasks = [self._save_sessions()]
+
+        if self._core_facts_dirty:
+            save_tasks.append(self._save_core_facts())
+            self._core_facts_dirty = False
+
+        if self._entities_dirty:
+            save_tasks.append(self._save_entities())
+            self._entities_dirty = False
+
+        # Save embedding cache for next session
+        save_tasks.append(self._save_embedding_cache())
+
+        # Execute all saves in parallel
+        await asyncio.gather(*save_tasks)
 
         # Consolidate patterns into facts
         await self._consolidate_sessions()
@@ -718,86 +748,83 @@ Keep under 75 words. Include specific identifiers mentioned. Just the summary.""
         agents_used: List[str],
         intent_type: str
     ):
-        """Store an episode for semantic search with deduplication"""
-        # Create summary for embedding - use more chars to capture full details
-        summary = f"User asked: {user_message[:500]}. Response: {response[:500]}"
-
-        # Get embedding
-        embedding = await self._get_embedding(summary)
-
-        # Check for semantic duplicates before storing
-        if self.episodes.count() > 0:
-            similar = self.episodes.query(
-                query_embeddings=[embedding],
-                n_results=1,
-                include=["distances", "metadatas", "documents"]
-            )
-
-            if similar and similar['ids'] and similar['ids'][0]:
-                distance = similar['distances'][0][0]
-                similarity = 1 - distance
-
-                # If very similar to existing memory, merge instead of adding
-                if similarity >= SIMILARITY_THRESHOLD:
-                    existing_id = similar['ids'][0][0]
-                    existing_meta = similar['metadatas'][0][0]
-                    existing_doc = similar['documents'][0][0]
-
-                    # Update existing episode with merged info
-                    merged_summary = f"{existing_doc} | Also: {user_message[:300]}"
-                    merged_agents = existing_meta.get('agents', '')
-                    if agents_used:
-                        new_agents = ",".join(agents_used)
-                        if merged_agents:
-                            merged_agents = f"{merged_agents},{new_agents}"
-                        else:
-                            merged_agents = new_agents
-
-                    # Update the existing episode
-                    self.episodes.update(
-                        ids=[existing_id],
-                        documents=[merged_summary[:1000]],
-                        metadatas=[{
-                            **existing_meta,
-                            "agents": merged_agents,
-                            "merged_count": existing_meta.get('merged_count', 1) + 1,
-                            "last_merged": time.time()
-                        }]
-                    )
-
-                    self.stats['merges'] += 1
-                    if self.verbose:
-                        print(f"[MEMORY] Merged similar episode (similarity: {similarity:.2f})")
-                    return
-
-        # Generate ID for new episode
-        episode_id = hashlib.sha256(
-            f"{user_message}{time.time()}".encode()
-        ).hexdigest()[:16]
-
-        # Metadata
-        metadata = {
-            "timestamp": time.time(),
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "agents": ",".join(agents_used) if agents_used else "",
-            "intent": intent_type,
-            "user_message": user_message[:500],
-            "merged_count": 1
-        }
-
-        # Store new episode
-        self.episodes.add(
-            ids=[episode_id],
-            embeddings=[embedding],
-            documents=[summary],
-            metadatas=[metadata]
-        )
+        """Queue an episode for batch storage at session end"""
+        # Queue the episode instead of immediately embedding and storing
+        self._pending_episodes.append({
+            'user_message': user_message[:500],
+            'response': response[:500],
+            'agents_used': agents_used or [],
+            'intent_type': intent_type,
+            'timestamp': time.time()
+        })
 
         if self.verbose:
-            print(f"[MEMORY] Stored new episode {episode_id[:8]}...")
+            print(f"[MEMORY] Queued episode ({len(self._pending_episodes)} pending)")
+
+    async def _flush_episodes(self):
+        """
+        Flush all pending episodes to storage with batch embedding.
+
+        This is called at session end to process all queued episodes at once,
+        significantly reducing API calls and improving performance.
+        """
+        if not self._pending_episodes:
+            return
+
+        if self.verbose:
+            print(f"[MEMORY] Flushing {len(self._pending_episodes)} episodes...")
+
+        # Prepare all summaries for batch embedding
+        episodes_to_store = []
+
+        for episode in self._pending_episodes:
+            summary = f"User asked: {episode['user_message']}. Response: {episode['response']}"
+
+            # Generate ID
+            episode_id = hashlib.sha256(
+                f"{episode['user_message']}{episode['timestamp']}".encode()
+            ).hexdigest()[:16]
+
+            # Metadata
+            metadata = {
+                "timestamp": episode['timestamp'],
+                "date": datetime.fromtimestamp(episode['timestamp']).strftime("%Y-%m-%d"),
+                "agents": ",".join(episode['agents_used']) if episode['agents_used'] else "",
+                "intent": episode['intent_type'],
+                "user_message": episode['user_message'],
+                "merged_count": 1
+            }
+
+            episodes_to_store.append({
+                'id': episode_id,
+                'summary': summary,
+                'metadata': metadata
+            })
+
+        # Get embeddings for all episodes
+        # Note: Currently sequential, but could be parallelized with asyncio.gather
+        embeddings = []
+        for ep in episodes_to_store:
+            embedding = await self._get_embedding(ep['summary'])
+            embeddings.append(embedding)
+
+        # Batch store all episodes at once
+        if episodes_to_store:
+            self.episodes.add(
+                ids=[ep['id'] for ep in episodes_to_store],
+                embeddings=embeddings,
+                documents=[ep['summary'] for ep in episodes_to_store],
+                metadatas=[ep['metadata'] for ep in episodes_to_store]
+            )
+
+        if self.verbose:
+            print(f"[MEMORY] Stored {len(episodes_to_store)} episodes in batch")
+
+        # Clear the queue
+        self._pending_episodes = []
 
     async def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding with caching"""
+        """Get embedding with persistent caching"""
         cache_key = hashlib.md5(text.encode()).hexdigest()
 
         if cache_key in self._embedding_cache:
@@ -812,14 +839,8 @@ Keep under 75 words. Include specific identifiers mentioned. Just the summary.""
             )
             embedding = result['embedding']
 
-            # Cache
+            # Cache (will be persisted at session end)
             self._embedding_cache[cache_key] = embedding
-
-            # Limit cache
-            if len(self._embedding_cache) > 500:
-                keys = list(self._embedding_cache.keys())
-                for key in keys[:50]:
-                    del self._embedding_cache[key]
 
             return embedding
         except Exception as e:
@@ -836,11 +857,24 @@ Keep under 75 words. Include specific identifiers mentioned. Just the summary.""
         Consolidate patterns from sessions into facts using LLM.
 
         This compresses old sessions into actionable knowledge.
+        Debounced to run every 5 sessions to reduce overhead.
         """
         if len(self.sessions) < 3:
             return
 
+        # Debounce: only consolidate every 5 sessions
+        self.stats['sessions_since_consolidation'] += 1
+        if self.stats['sessions_since_consolidation'] < 5:
+            if self.verbose:
+                print(f"[CONSOLIDATION] Skipping (session {self.stats['sessions_since_consolidation']}/5)")
+            return
+
+        # Reset counter and proceed with consolidation
+        self.stats['sessions_since_consolidation'] = 0
         self.stats['consolidations'] += 1
+
+        if self.verbose:
+            print(f"[CONSOLIDATION] Running consolidation...")
 
         # First do pattern-based consolidation
         patterns = self._analyze_patterns()
@@ -874,7 +908,7 @@ Keep under 75 words. Include specific identifiers mentioned. Just the summary.""
         # Now use LLM for deeper insight extraction
         await self._llm_consolidate()
 
-        self._save_consolidated_facts()
+        await self._save_consolidated_facts()
 
     async def _llm_consolidate(self):
         """Use LLM to extract meaningful facts from session summaries."""
@@ -1066,7 +1100,8 @@ Keep each fact under 15 words. Be specific and actionable."""
                 'mention_count': 1
             }
 
-        self._save_entities()
+        # Mark dirty for batch save at session end
+        self._entities_dirty = True
 
     def get_entity_context(self) -> str:
         """Get frequently used entities for context"""
@@ -1189,12 +1224,12 @@ Keep each fact under 15 words. Be specific and actionable."""
     # PERSISTENCE
     # =========================================================================
 
-    def _save_core_facts(self):
-        """Save core facts to disk"""
+    async def _save_core_facts(self):
+        """Save core facts to disk asynchronously"""
         try:
             data = {key: asdict(fact) for key, fact in self.core_facts.items()}
-            with open(f"{self.storage_dir}/core_facts.json", 'w') as f:
-                json.dump(data, f, indent=2)
+            async with aiofiles.open(f"{self.storage_dir}/core_facts.json", 'w') as f:
+                await f.write(json.dumps(data, indent=2))
         except Exception as e:
             if self.verbose:
                 print(f"[SAVE] Core facts error: {e}")
@@ -1212,12 +1247,12 @@ Keep each fact under 15 words. Be specific and actionable."""
             if self.verbose:
                 print(f"[LOAD] Core facts error: {e}")
 
-    def _save_consolidated_facts(self):
-        """Save consolidated facts to disk"""
+    async def _save_consolidated_facts(self):
+        """Save consolidated facts to disk asynchronously"""
         try:
             data = [asdict(fact) for fact in self.consolidated_facts]
-            with open(f"{self.storage_dir}/consolidated_facts.json", 'w') as f:
-                json.dump(data, f, indent=2)
+            async with aiofiles.open(f"{self.storage_dir}/consolidated_facts.json", 'w') as f:
+                await f.write(json.dumps(data, indent=2))
         except Exception as e:
             if self.verbose:
                 print(f"[SAVE] Consolidated facts error: {e}")
@@ -1234,11 +1269,11 @@ Keep each fact under 15 words. Be specific and actionable."""
             if self.verbose:
                 print(f"[LOAD] Consolidated facts error: {e}")
 
-    def _save_sessions(self):
-        """Save sessions to disk"""
+    async def _save_sessions(self):
+        """Save sessions to disk asynchronously"""
         try:
-            with open(f"{self.storage_dir}/sessions.json", 'w') as f:
-                json.dump({'sessions': self.sessions}, f, indent=2)
+            async with aiofiles.open(f"{self.storage_dir}/sessions.json", 'w') as f:
+                await f.write(json.dumps({'sessions': self.sessions}, indent=2))
         except Exception as e:
             if self.verbose:
                 print(f"[SAVE] Sessions error: {e}")
@@ -1255,11 +1290,11 @@ Keep each fact under 15 words. Be specific and actionable."""
             if self.verbose:
                 print(f"[LOAD] Sessions error: {e}")
 
-    def _save_entities(self):
-        """Save entities to disk"""
+    async def _save_entities(self):
+        """Save entities to disk asynchronously"""
         try:
-            with open(f"{self.storage_dir}/entities.json", 'w') as f:
-                json.dump(self.entities, f, indent=2)
+            async with aiofiles.open(f"{self.storage_dir}/entities.json", 'w') as f:
+                await f.write(json.dumps(self.entities, indent=2))
         except Exception as e:
             if self.verbose:
                 print(f"[SAVE] Entities error: {e}")
@@ -1274,3 +1309,37 @@ Keep each fact under 15 words. Be specific and actionable."""
         except Exception as e:
             if self.verbose:
                 print(f"[LOAD] Entities error: {e}")
+
+    async def _save_embedding_cache(self):
+        """Save embedding cache to disk asynchronously for persistence across sessions"""
+        try:
+            # Limit cache size before saving (keep most recent 1000 entries)
+            max_cache_size = 1000
+            if len(self._embedding_cache) > max_cache_size:
+                # Keep entries based on insertion order (dict maintains order in Python 3.7+)
+                keys = list(self._embedding_cache.keys())
+                for key in keys[:-max_cache_size]:
+                    del self._embedding_cache[key]
+
+            async with aiofiles.open(f"{self.storage_dir}/embedding_cache.json", 'w') as f:
+                await f.write(json.dumps(self._embedding_cache))
+
+            if self.verbose:
+                print(f"[SAVE] Embedding cache: {len(self._embedding_cache)} entries")
+        except Exception as e:
+            if self.verbose:
+                print(f"[SAVE] Embedding cache error: {e}")
+
+    def _load_embedding_cache(self):
+        """Load embedding cache from disk"""
+        try:
+            path = f"{self.storage_dir}/embedding_cache.json"
+            if Path(path).exists():
+                with open(path, 'r') as f:
+                    self._embedding_cache = json.load(f)
+                if self.verbose:
+                    print(f"[LOAD] Embedding cache: {len(self._embedding_cache)} entries")
+        except Exception as e:
+            if self.verbose:
+                print(f"[LOAD] Embedding cache error: {e}")
+            self._embedding_cache = {}

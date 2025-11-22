@@ -183,7 +183,9 @@ class OrchestratorAgent:
             # Default LLM: Gemini 2.5 Flash
             self.llm = GeminiFlash(LLMConfig(
                 model_name='models/gemini-2.5-flash',
-                temperature=0.7
+                temperature=0.4,
+                top_p=0.90,
+                top_k=40
             ))
         else:
             self.llm = llm

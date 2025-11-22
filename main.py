@@ -206,6 +206,10 @@ async def main():
         # Show header
         ui.print_header(orchestrator.session_id)
 
+        # Show LLM model being used
+        model_name = orchestrator.llm.config.model_name if hasattr(orchestrator, 'llm') else 'Unknown'
+        ui.console.print(f"[dim]LLM: [cyan]{model_name}[/cyan][/dim]\n")
+
         # Discover agents with spinner
         from rich.progress import Progress, SpinnerColumn, TextColumn
 

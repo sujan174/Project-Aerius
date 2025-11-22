@@ -154,6 +154,15 @@ class TestSession:
             if self.orchestrator:
                 try:
                     await self.orchestrator.cleanup()
+                except RuntimeError as e:
+                    # Suppress MCP anyio task group cleanup errors in parallel tests
+                    # This is a known issue with MCP's stdio client when running
+                    # multiple sessions in parallel - cleanup happens in different
+                    # task context than initialization
+                    if "cancel scope" in str(e):
+                        pass  # Expected in parallel test runs
+                    else:
+                        self._log(f"Cleanup warning: {e}")
                 except Exception as e:
                     self._log(f"Cleanup warning: {e}")
 
@@ -451,9 +460,26 @@ Examples:
         verbose=args.verbose
     )
 
+    # Custom exception handler to suppress MCP cleanup noise
+    def handle_exception(loop, context):
+        exception = context.get("exception")
+        if exception:
+            # Suppress MCP anyio task group cleanup errors
+            if "cancel scope" in str(exception):
+                return
+        # Log other unexpected exceptions
+        if args.verbose:
+            print(f"Async exception: {context.get('message', 'Unknown')}")
+
     # Run tests
     try:
-        summary = asyncio.run(runner.run_all(args.input))
+        loop = asyncio.new_event_loop()
+        loop.set_exception_handler(handle_exception)
+        asyncio.set_event_loop(loop)
+        try:
+            summary = loop.run_until_complete(runner.run_all(args.input))
+        finally:
+            loop.close()
 
         # Exit with error code if there were failures
         if summary.get('sessions', {}).get('failed', 0) > 0:

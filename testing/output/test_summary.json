@@ -1,6 +1,6 @@
 {
-  "run_time": "2025-11-22T23:09:33.479400",
-  "total_duration_seconds": 136.597,
+  "run_time": "2025-11-23T01:09:27.244684",
+  "total_duration_seconds": 143.743,
   "sessions": {
     "total": 1,
     "completed": 1,
@@ -13,25 +13,25 @@
     "success_rate": "100.0%"
   },
   "tokens": {
-    "prompt_tokens": 79001,
-    "cached_tokens": 59386,
-    "completion_tokens": 1605,
-    "total_tokens": 82594
+    "prompt_tokens": 82721,
+    "cached_tokens": 58313,
+    "completion_tokens": 1472,
+    "total_tokens": 86322
   },
   "cost": {
     "actual": {
-      "cached_input": 0.001113,
-      "standard_input": 0.001471,
-      "output": 0.000481,
-      "total": 0.003066
+      "cached_input": 0.001093,
+      "standard_input": 0.001831,
+      "output": 0.000442,
+      "total": 0.003366
     },
     "without_cache": {
-      "input": 0.005925,
-      "output": 0.000481,
-      "total": 0.006407
+      "input": 0.006204,
+      "output": 0.000442,
+      "total": 0.006646
     },
-    "savings": 0.00334,
-    "savings_percent": 52.1
+    "savings": 0.00328,
+    "savings_percent": 49.4
   },
   "failed_sessions": []
 }

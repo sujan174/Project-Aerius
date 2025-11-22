@@ -1,170 +1,170 @@
 {
   "test_name": "basic_queries",
   "input_file": "/Users/sujan/Developer/Project-Friday/testing/input/basic_queries.txt",
-  "start_time": "2025-11-22T23:07:16.882861",
-  "end_time": "2025-11-22T23:09:32.897579",
-  "total_duration_seconds": 136.015,
+  "start_time": "2025-11-23T01:07:03.501455",
+  "end_time": "2025-11-23T01:09:20.406342",
+  "total_duration_seconds": 136.905,
   "summary": {
     "total_queries": 10,
     "successful": 10,
     "failed": 0,
     "success_rate": "100.0%",
     "total_tokens": {
-      "prompt_tokens": 79001,
-      "cached_tokens": 59386,
-      "completion_tokens": 1605,
-      "total_tokens": 82594
+      "prompt_tokens": 82721,
+      "cached_tokens": 58313,
+      "completion_tokens": 1472,
+      "total_tokens": 86322
     }
   },
   "results": [
     {
       "query_number": 1,
       "query": "What agents are currently loaded and available?",
-      "response": "I have access to the following agents:\n\n*   **Slack Agent**:\n    *   **Capabilities**: Send messages to channels and direct messages, Search messages and conversations, Read channel history and content, Manage reactions and thread replies, List channels and get user information.\n    *   **Limitations**: Cannot delete messages (only admins), cannot manage channel settings (members, permissions, etc.), cannot create or delete channels (limited to admin workspace), cannot access private channels without membership.\n\n*   **Google Calendar Agent**:\n    *   **Capabilities**: Create calendar events with dates, times, and attendees, Schedule recurring meetings (daily, weekly, monthly), List and search calendar events, Update and reschedule existing events, Delete and cancel events, Check availability and free/busy status, Add Google Meet links to events, Set reminders and notifications, Manage multiple calendars, Parse natural language time expressions.\n\n*   **Browser Agent**:\n    *   **Capabilities**: Navigate to websites and URLs, Click buttons and interactive elements, Fill forms and input fields, Extract data and text from pages, Take screenshots and generate PDFs, Execute JavaScript in page context, Handle authentication and cookies, Automate complex workflows, Scrape dynamic content, Handle file uploads and downloads.\n\n*   **Jira Agent**:\n    *   **Capabilities**: Create and manage Jira issues, Search issues using JQL (Jira Query Language), Update issue fields (status, assignee, labels, custom fields), Add comments and collaborate on issues, Manage workflows and transitions, Create sub-tasks and link issues.\n    *   **Limitations**: Cannot delete issues (archived only), cannot manage project settings or permissions, cannot create or delete projects (admin only), cannot modify issue history or audit logs.\n\n*   **GitHub Agent**:\n    *   **Capabilities**: Manage issues and pull requests, Perform code reviews and analyze PRs, Search code and commits, Read repository files and structure, Work with branches and commits, Get commit metadata (SHA, author, message, date).\n    *   **Limitations**: Cannot fetch raw diff/patch content (use GitHub UI or API directly), cannot modify repository settings or access controls, cannot create or delete repositories, cannot manage webhooks or integrations.\n\n*   **Scraper Agent**:\n    *   **Capabilities**: Scrape single web pages, Crawl entire websites, Extract structured data with AI, Handle JavaScript-rendered content, Convert pages to Markdown, Extract specific data fields, Follow links and pagination, Respect robots.txt rules, Export data in multiple formats, Parse HTML and extract elements.\n\n*   **Code Reviewer Agent**:\n    *   **Capabilities**: Analyze code for security vulnerabilities, Detect performance issues and bottlenecks, Review code quality and maintainability, Validate best practices and patterns, Check error handling and edge cases, Assess test coverage and quality, Review architecture and design, Multi-language support (Python, JS, Java, Go, etc.), Provide actionable improvement suggestions, Generate structured review reports.",
+      "response": "The following agents are currently loaded and available:\n\n*   **Slack Agent**: For sending messages, searching conversations, reading channel history, managing reactions, and listing channels.\n*   **Google Calendar Agent**: For creating, listing, updating, and deleting calendar events, checking availability, and managing multiple calendars.\n*   **Browser Agent**: For navigating websites, clicking elements, filling forms, extracting data, and automating workflows.\n*   **Jira Agent**: For creating and managing Jira issues, searching issues, updating fields, adding comments, and managing workflows.\n*   **GitHub Agent**: For managing issues and pull requests, performing code reviews, searching code, and reading repository files.\n*   **Scraper Agent**: For scraping single web pages, crawling websites, extracting structured data, and handling JavaScript-rendered content.\n*   **Code Reviewer Agent**: For analyzing code for security, performance, quality, and best practices, and providing suggestions.",
       "success": true,
       "error": null,
-      "duration_seconds": 10.686,
-      "timestamp": "2025-11-22T23:07:31.060667",
+      "duration_seconds": 7.14,
+      "timestamp": "2025-11-23T01:07:13.776077",
       "tokens": {
-        "prompt_tokens": 3144,
+        "prompt_tokens": 3405,
         "cached_tokens": 0,
-        "completion_tokens": 611,
-        "total_tokens": 3797
+        "completion_tokens": 195,
+        "total_tokens": 3652
       }
     },
     {
       "query_number": 2,
       "query": "What is my configured timezone?",
-      "response": "Your configured timezone is IST.",
+      "response": "Your configured timezone is IST (Indian Standard Time).",
       "success": true,
       "error": null,
-      "duration_seconds": 5.742,
-      "timestamp": "2025-11-22T23:07:36.802508",
+      "duration_seconds": 3.129,
+      "timestamp": "2025-11-23T01:07:16.905073",
       "tokens": {
-        "prompt_tokens": 3791,
+        "prompt_tokens": 3635,
         "cached_tokens": 0,
-        "completion_tokens": 6,
-        "total_tokens": 3831
+        "completion_tokens": 10,
+        "total_tokens": 3645
       }
     },
     {
       "query_number": 3,
       "query": "My email is h.sujan2004@gmail.com",
-      "response": "Okay, I've noted your email address as h.sujan2004@gmail.com.",
+      "response": "Got it. I've noted your email address as `h.sujan2004@gmail.com`.\n\nNow, let's proceed with your previous request: I will check your calendar for Friday morning. If you're free at 10 AM, I'll create a Jira task for \"Weekly Sync\" and notify the #dev-opps channel that the meeting is set for that time with the Jira ticket linked.\n\nShall I go ahead with that?",
       "success": true,
       "error": null,
-      "duration_seconds": 11.875,
-      "timestamp": "2025-11-22T23:07:48.677476",
+      "duration_seconds": 5.208,
+      "timestamp": "2025-11-23T01:07:22.113215",
       "tokens": {
-        "prompt_tokens": 3842,
-        "cached_tokens": 3681,
-        "completion_tokens": 23,
-        "total_tokens": 3926
+        "prompt_tokens": 3689,
+        "cached_tokens": 0,
+        "completion_tokens": 100,
+        "total_tokens": 3880
       }
     },
     {
       "query_number": 4,
       "query": "Create a Jira bug in project KAN with summary \"Mobile app crashes on startup\" and description \"Happens on iOS 16 devices during splash screen.\" priority High.",
-      "response": "I've successfully created a Jira issue KAN-53: \"Mobile app crashes on startup\" with High priority.\n\nHere are the details:\n*   **Summary**: Mobile app crashes on startup\n*   **Type**: Task (Bug type not available in KAN project)\n*   **Priority**: High\n*   **Status**: To Do\n*   **Link**: https://hsujan2004-1760941468370.atlassian.net/browse/KAN-53\n\nLet me know if you'd like me to assign it to a team member, add it to the current sprint, or link it to related issues.",
+      "response": "I've successfully created a Jira issue for you:\n\n✅ **Created Jira Bug:**\n*   **Issue ID:** KAN-57\n*   **Summary:** Mobile app crashes on startup\n*   **Description:** Happens on iOS 16 devices during splash screen.\n*   **Priority:** High\n*   **Link:** https://hsujan2004-1760941468370.atlassian.net/browse/KAN-57\n\nPlease note that the issue was created as a \"Task\" because \"Bug\" type was not directly available in the KAN project.\n\nWould you like to assign it to a team member or add it to the current sprint?",
       "success": true,
       "error": null,
-      "duration_seconds": 21.527,
-      "timestamp": "2025-11-22T23:08:10.204853",
+      "duration_seconds": 29.129,
+      "timestamp": "2025-11-23T01:07:51.242559",
       "tokens": {
-        "prompt_tokens": 8059,
-        "cached_tokens": 3691,
-        "completion_tokens": 198,
-        "total_tokens": 8299
+        "prompt_tokens": 7908,
+        "cached_tokens": 7361,
+        "completion_tokens": 207,
+        "total_tokens": 8158
       }
     },
     {
       "query_number": 5,
       "query": "What is the key of the Jira issue I just created?",
-      "response": "The key of the Jira issue you just created is KAN-53.",
+      "response": "The key of the Jira issue you just created is **KAN-57**.",
       "success": true,
       "error": null,
-      "duration_seconds": 4.241,
-      "timestamp": "2025-11-22T23:08:14.445801",
+      "duration_seconds": 3.946,
+      "timestamp": "2025-11-23T01:07:55.188305",
       "tokens": {
-        "prompt_tokens": 4319,
-        "cached_tokens": 3701,
+        "prompt_tokens": 4250,
+        "cached_tokens": 3695,
         "completion_tokens": 16,
-        "total_tokens": 4396
+        "total_tokens": 4323
       }
     },
     {
       "query_number": 6,
       "query": "Assign that issue to me and add a comment saying \"I have reproduced this on the simulator.\"",
-      "response": "I have assigned KAN-53 to you (h.sujan2004@gmail.com) and added a comment saying \"I have reproduced KAN-53 on the simulator.\"",
+      "response": "I've processed your request:\n\n✅ **Completed:**\n*   Added the comment \"I have reproduced this on the simulator.\" to Jira issue KAN-57.\n\n❌ **Could not complete:**\n*   Assign KAN-57 to you: There was an error with the assignment.\n\nWould you like me to try assigning it to you again, or would you like to perform any other actions?",
       "success": true,
       "error": null,
-      "duration_seconds": 11.503,
-      "timestamp": "2025-11-22T23:08:25.948943",
+      "duration_seconds": 13.769,
+      "timestamp": "2025-11-23T01:08:08.957583",
       "tokens": {
-        "prompt_tokens": 8874,
-        "cached_tokens": 7400,
-        "completion_tokens": 92,
-        "total_tokens": 9057
+        "prompt_tokens": 8730,
+        "cached_tokens": 7389,
+        "completion_tokens": 125,
+        "total_tokens": 9184
       }
     },
     {
       "query_number": 7,
       "query": "What meetings do I have scheduled for tomorrow?",
-      "response": "Here are your scheduled meetings for tomorrow, Sunday, November 23, 2025:\n\n*   **Call mom**\n    *   1:00 PM - 1:30 PM IST\n*   **Mobile Crash Debugging**\n    *   2:00 PM - 3:00 PM IST\n    *   Jira Ticket: KAN-47 (https://hsujan2004-1760941468370.atlassian.net/browse/KAN-47)",
+      "response": "You have no meetings scheduled for tomorrow, Monday, November 24, 2025.",
       "success": true,
       "error": null,
-      "duration_seconds": 12.482,
-      "timestamp": "2025-11-22T23:08:38.431022",
+      "duration_seconds": 12.993,
+      "timestamp": "2025-11-23T01:08:21.950717",
       "tokens": {
-        "prompt_tokens": 9311,
-        "cached_tokens": 7405,
-        "completion_tokens": 157,
-        "total_tokens": 9634
+        "prompt_tokens": 9155,
+        "cached_tokens": 7393,
+        "completion_tokens": 59,
+        "total_tokens": 9426
       }
     },
     {
       "query_number": 8,
       "query": "Schedule a \"Mobile Crash Debugging\" session for tomorrow at 2pm for 1 hour if its clashing, schedule it for 1 hour before it .",
-      "response": "It looks like you already have a \"Mobile Crash Debugging\" session scheduled for tomorrow from 2:00 PM to 3:00 PM, so scheduling another one at the same time would cause a clash.\n\nIf I try to schedule it one hour before (at 1:00 PM), that would clash with your \"Call mom\" event from 1:00 PM to 1:30 PM.\n\nWould you like me to try scheduling it at a different time, or should I proceed with one of these times despite the clash?",
+      "response": "I've scheduled your \"Mobile Crash Debugging\" session for tomorrow, Monday, November 24, 2025, from 2 PM to 3 PM IST. I have also included the link to Jira ticket KAN-57 in the event description.",
       "success": true,
       "error": null,
-      "duration_seconds": 11.024,
-      "timestamp": "2025-11-22T23:08:49.454994",
+      "duration_seconds": 19.093,
+      "timestamp": "2025-11-23T01:08:41.044094",
       "tokens": {
-        "prompt_tokens": 4925,
-        "cached_tokens": 4641,
-        "completion_tokens": 116,
-        "total_tokens": 5733
+        "prompt_tokens": 9515,
+        "cached_tokens": 8317,
+        "completion_tokens": 108,
+        "total_tokens": 10085
       }
     },
     {
       "query_number": 9,
       "query": "Send a message to #dev-opps saying \"I'm investigating the iOS crash report (KAN-123).\"",
-      "response": "👤 Name set to Investigating The\n\nI've sent the message \"I'm investigating the iOS crash report (KAN-123).\" to the #dev-opps channel.",
+      "response": "I've sent the message to the #dev-opps channel:\n\n✅ **Message Sent:**\n*   **Channel:** #dev-opps\n*   **Content:** \"I'm investigating the iOS crash report (KAN-123).\"\n*   **Link:** https://dev-opps.slack.com/archives/C09MTRNQNP6/p1763840333162299",
       "success": true,
       "error": null,
-      "duration_seconds": 9.726,
-      "timestamp": "2025-11-22T23:08:59.180817",
+      "duration_seconds": 15.301,
+      "timestamp": "2025-11-23T01:08:56.345296",
       "tokens": {
-        "prompt_tokens": 10362,
-        "cached_tokens": 9302,
-        "completion_tokens": 74,
-        "total_tokens": 10532
+        "prompt_tokens": 10025,
+        "cached_tokens": 4629,
+        "completion_tokens": 142,
+        "total_tokens": 10286
       }
     },
     {
       "query_number": 10,
       "query": "Check my calendar for Friday morning. If I'm free at 10am, create a Jira task for \"Weekly Sync\" and notify the #dev-opps channel that the meeting is set for that time with the Jira ticket linked.",
-      "response": "I've completed your request:\n\n✅ **Completed:**\n*   I checked your calendar and you are free on Friday, November 28, 2025, at 10 AM IST.\n*   I created a Jira task KAN-54: \"Weekly Sync\".\n*   I notified the #dev-opps channel that \"The 'Weekly Sync' meeting is set for Friday, November 28, 2025, at 10 AM IST. Jira ticket: https://hsujan2004-1760941468370.atlassian.net/browse/KAN-54\".",
+      "response": "❌ I was unable to check your calendar for Friday, November 28, 2025, at 10 AM.\n\n**What I tried:** I attempted to check the free/busy information for `h.sujan2004@gmail.com`.\n**What failed:** The Google Calendar agent reported that it could not retrieve the free/busy information for that email address.\n**Why:** It's possible that the calendar for `h.sujan2004@gmail.com` could not be found, or I do not have the necessary permissions to access it.\n\nSince I couldn't confirm your availability, I cannot proceed with creating the Jira task or sending the Slack notification.\n\nWould you like to try checking another email address, or would you like to proceed with creating the Jira task and sending the Slack message without checking your availability?",
       "success": true,
       "error": null,
-      "duration_seconds": 33.716,
-      "timestamp": "2025-11-22T23:09:32.897323",
+      "duration_seconds": 24.061,
+      "timestamp": "2025-11-23T01:09:20.406322",
       "tokens": {
-        "prompt_tokens": 22374,
-        "cached_tokens": 19565,
-        "completion_tokens": 312,
-        "total_tokens": 23389
+        "prompt_tokens": 22409,
+        "cached_tokens": 19529,
+        "completion_tokens": 510,
+        "total_tokens": 23683
       }
     }
   ]
