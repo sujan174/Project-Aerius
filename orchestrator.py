@@ -60,8 +60,14 @@ from core.datetime_context import (
 
 # Import intelligent instruction system
 from intelligence.instruction_parser import (
-    IntelligentInstructionParser, InstructionMemory, ParsedInstruction
+    IntelligentInstructionParser, ParsedInstruction
 )
+
+# Import episodic memory store and session storage
+from core.memory_store import EpisodicMemoryStore, ConversationSessionStore
+
+# Import intelligent memory system (v2.0 - semantic understanding)
+from core.intelligent_memory import IntelligentMemory
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -249,7 +255,7 @@ class OrchestratorAgent:
         self.error_enhancer = ErrorMessageEnhancer(verbose=self.verbose)
 
         # ===================================================================
-        # INTELLIGENT INSTRUCTION SYSTEM (in-memory only)
+        # INTELLIGENT INSTRUCTION SYSTEM
         # ===================================================================
 
         # Initialize intelligent instruction parser (uses LLM for semantic understanding)
@@ -258,11 +264,47 @@ class OrchestratorAgent:
             verbose=self.verbose
         )
 
-        # Initialize instruction memory (in-memory, no persistence)
-        self.instruction_memory = InstructionMemory(
-            storage_path=None,
+        # Use instruction memory from user_prefs (single source of truth with persistence)
+        self.instruction_memory = self.user_prefs.instruction_memory
+
+        # ===================================================================
+        # EPISODIC MEMORY STORE
+        # ===================================================================
+
+        # Initialize episodic memory store for long-term context
+        self.memory_store = EpisodicMemoryStore(
+            persist_directory="data/memory",
             verbose=self.verbose
         )
+
+        # Initialize conversation session store for cross-session context
+        self.session_store = ConversationSessionStore(
+            storage_path="data/conversation_sessions.json",
+            max_sessions=7,
+            verbose=self.verbose
+        )
+        self.session_store.start_session(self.session_id)
+
+        # ===================================================================
+        # INTELLIGENT MEMORY SYSTEM v2.0
+        # ===================================================================
+
+        # Initialize intelligent memory (semantic understanding, entity graph, smart context)
+        self.intelligent_memory = IntelligentMemory(
+            llm_client=self.llm,
+            storage_dir="data/intelligent_memory",
+            verbose=self.verbose
+        )
+        self.intelligent_memory.start_session(self.session_id)
+
+        # Track current turn data for episode storage
+        self._current_turn_data = {
+            'user_message': '',
+            'agents_used': [],
+            'responses': [],
+            'intent': '',
+            'entities': []
+        }
 
         # ===================================================================
 
@@ -271,10 +313,23 @@ class OrchestratorAgent:
 
         # ===================================================================
 
-        # Set default timezone to IST (Indian Standard Time)
-        set_user_timezone('IST')
-        if self.verbose:
-            print(f"{C.CYAN}🕐 Default timezone: IST (Asia/Kolkata){C.ENDC}")
+        # Load saved timezone from preferences, or default to IST
+        # Check both direct key and category-based lookup for robustness
+        saved_timezone = self.instruction_memory.get('timezone')
+        if not saved_timezone:
+            # Try category-based lookup in case key differs
+            tz_instructions = self.instruction_memory.get_all(category='timezone')
+            if tz_instructions:
+                saved_timezone = list(tz_instructions.values())[0]
+
+        if saved_timezone:
+            set_user_timezone(saved_timezone)
+            if self.verbose:
+                print(f"{C.CYAN}🕐 Loaded timezone from preferences: {saved_timezone}{C.ENDC}")
+        else:
+            set_user_timezone('IST')
+            if self.verbose:
+                print(f"{C.CYAN}🕐 Default timezone: IST (Asia/Kolkata){C.ENDC}")
 
         # ===================================================================
 
@@ -431,12 +486,13 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
             "array": protos.Type.ARRAY,
         }
 
-    def _build_dynamic_system_prompt(self) -> str:
+    def _build_dynamic_system_prompt(self, memory_context: str = "") -> str:
         """
         Build system prompt with dynamic user preferences and agent health status.
 
         This enhances the base prompt with:
         - Current datetime context
+        - Episodic memory context
         - User communication style preferences
         - Agent health/availability status
         - Learned user patterns
@@ -446,6 +502,16 @@ Remember: Your goal is to be genuinely helpful, making users more productive and
         # Add current datetime context (important for scheduling, relative times)
         datetime_context = format_datetime_for_prompt()
         prompt += "\n\n" + datetime_context
+
+        # Add episodic memory context (relevant past interactions)
+        if memory_context:
+            prompt += "\n\n" + memory_context
+
+        # Add previous session context (last 7 conversations)
+        if hasattr(self, 'session_store'):
+            session_context = self.session_store.format_for_prompt()
+            if session_context:
+                prompt += "\n\n" + session_context
 
         # Add explicit user instructions from intelligent instruction memory (highest priority)
         if hasattr(self, 'instruction_memory'):
@@ -496,6 +562,165 @@ Prefer using healthy agents when possible. If a user specifically requests an un
         return prompt
 
     # =========================================================================
+    # EPISODIC MEMORY METHODS
+    # =========================================================================
+
+    async def _retrieve_memory_context(self, user_message: str) -> str:
+        """
+        Retrieve relevant memory context for current message.
+
+        Combines:
+        - Intelligent memory (entity graph, past sessions)
+        - Episodic memory (semantic similarity search)
+
+        Called at start of process_message(), before intelligence analysis.
+        """
+        context_parts = []
+
+        # 1. Get intelligent memory context (entities + sessions)
+        try:
+            intelligent_context = self.intelligent_memory.get_context_for_message(user_message)
+            if intelligent_context:
+                context_parts.append(intelligent_context)
+        except Exception as e:
+            if self.verbose:
+                print(f"[ORCHESTRATOR] Intelligent memory failed: {e}")
+
+        # 2. Get episodic memory context (semantic search)
+        try:
+            episodes = await self.memory_store.retrieve_relevant(
+                query=user_message,
+                n_results=3,  # Reduced since we now have intelligent memory
+                min_similarity=0.75
+            )
+
+            if episodes:
+                context_parts.append(self.memory_store.format_for_prompt(episodes))
+
+        except Exception as e:
+            if self.verbose:
+                print(f"[ORCHESTRATOR] Episodic memory failed: {e}")
+
+        return "\n\n".join(context_parts)
+
+    async def _store_episode(
+        self,
+        user_message: str,
+        final_response: str,
+        agents_used: List[str],
+        intent_type: str,
+        entities: List[Dict],
+        success: bool = True
+    ):
+        """
+        Store interaction as episodic memory.
+
+        Called at end of process_message() after generating response.
+        """
+        try:
+            await self.memory_store.add_episode(
+                user_message=user_message,
+                agent_response=final_response[:500],  # Truncate long responses
+                agents_used=agents_used,
+                intent_type=intent_type,
+                entities=entities,
+                success=success,
+                llm_client=self.llm
+            )
+        except Exception as e:
+            if self.verbose:
+                print(f"[ORCHESTRATOR] Episode storage failed: {e}")
+
+    # =========================================================================
+    # CORRECTION DETECTION AND LEARNING
+    # =========================================================================
+
+    async def _detect_and_handle_correction(self, user_message: str) -> bool:
+        """
+        Detect if user is correcting previous behavior.
+
+        Patterns:
+        - "No, use X instead"
+        - "That's wrong, it should be Y"
+        - "I said X, not Y"
+
+        Returns True if correction detected and handled.
+        """
+        import re
+
+        correction_patterns = [
+            r"no,?\s+(use|do|make|set)\s+(.+)",
+            r"that'?s\s+wrong",
+            r"i\s+said\s+(.+),?\s+not\s+(.+)",
+            r"don'?t\s+(use|do)\s+(.+)",
+            r"actually,?\s+(use|do|make|set)\s+(.+)"
+        ]
+
+        message_lower = user_message.lower()
+
+        for pattern in correction_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                # This is a correction - analyze with LLM
+                correction_analysis = await self._analyze_correction(user_message)
+
+                if correction_analysis:
+                    key = correction_analysis.get('key')
+                    new_value = correction_analysis.get('value')
+
+                    if key and new_value:
+                        self.user_prefs.flip_preference(
+                            key=key,
+                            new_value=new_value,
+                            source="user_correction"
+                        )
+
+                        if self.verbose:
+                            print(f"[ORCHESTRATOR] Learned from correction: {key} = {new_value}")
+
+                        return True
+
+        return False
+
+    async def _analyze_correction(self, message: str) -> Optional[Dict]:
+        """Use LLM to extract what preference is being corrected"""
+        # Get recent context
+        recent_context = ""
+        if hasattr(self, 'context_manager'):
+            recent_turns = self.context_manager.get_relevant_context(message)
+            if recent_turns:
+                recent_context = str(recent_turns)[:500]
+
+        prompt = f"""The user is correcting previous behavior. Extract what setting they want changed.
+
+Message: "{message}"
+
+Recent context: {recent_context}
+
+JSON response only:
+{{"is_correction": true/false, "key": "preference_key", "value": "new_value", "confidence": 0.0-1.0}}
+
+Examples:
+- "No, use EST timezone" -> {{"is_correction": true, "key": "timezone", "value": "EST", "confidence": 0.95}}
+- "Don't assign to me" -> {{"is_correction": true, "key": "default_assignee", "value": "none", "confidence": 0.9}}
+"""
+
+        try:
+            response = await self.llm.generate(prompt)
+            text = response.text if hasattr(response, 'text') else str(response)
+
+            # Parse JSON
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            if start >= 0 and end > start:
+                return json.loads(text[start:end])
+        except Exception as e:
+            if self.verbose:
+                print(f"[ORCHESTRATOR] Correction analysis failed: {e}")
+
+        return None
+
+    # =========================================================================
     # EXPLICIT INSTRUCTION DETECTION
     # =========================================================================
 
@@ -543,6 +768,10 @@ Prefer using healthy agents when possible. If a user specifically requests an un
              'default', 'default_project'),
             (r'always\s+(?:use|create\s+(?:tickets?|issues?)\s+in)\s+([A-Z0-9_-]+)',
              'default', 'default_project'),
+
+            # User name patterns
+            (r'(?:my\s+name\s+is|i\s+am|call\s+me|i\'m)\s+([A-Za-z][A-Za-z\s]{1,30})',
+             'preference', 'user_name'),
 
             # Default assignee patterns
             (r'(?:always\s+)?assign\s+(?:tickets?|issues?|tasks?)?\s*to\s+([A-Za-z0-9_@.-]+)',
@@ -1377,6 +1606,20 @@ Provide a clear instruction describing what you want to accomplish.""",
         self.user_prefs.record_interaction_style(user_message)
 
         # ===================================================================
+        # CORRECTION DETECTION
+        # ===================================================================
+
+        # Check for corrections first (before other processing)
+        is_correction = await self._detect_and_handle_correction(user_message)
+
+        # ===================================================================
+        # EPISODIC MEMORY RETRIEVAL
+        # ===================================================================
+
+        # Retrieve relevant episodic memory context
+        memory_context = await self._retrieve_memory_context(user_message)
+
+        # ===================================================================
         # INTELLIGENT INSTRUCTION DETECTION
         # ===================================================================
 
@@ -1386,14 +1629,16 @@ Provide a clear instruction describing what you want to accomplish.""",
             parsed_instruction = await self.instruction_parser.parse(user_message)
 
             if parsed_instruction.is_instruction and parsed_instruction.confidence >= 0.5:
-                # Store in instruction memory
-                self.instruction_memory.add(parsed_instruction)
-
                 # Apply specific instruction types
                 if parsed_instruction.category == 'timezone' and parsed_instruction.value:
+                    # Force consistent key for timezone instructions
+                    parsed_instruction.key = 'timezone'
                     if set_user_timezone(parsed_instruction.value):
                         if self.verbose:
                             print(f"{C.CYAN}🕐 Global timezone set to: {parsed_instruction.value}{C.ENDC}")
+
+                # Store in instruction memory (after any key normalization)
+                self.instruction_memory.add(parsed_instruction)
 
                 # Generate confirmation
                 instruction_confirmation = (
@@ -1423,8 +1668,8 @@ Provide a clear instruction describing what you want to accomplish.""",
             # Create model with agent tools using LLM abstraction
             agent_tools = self._create_agent_tools()
 
-            # Set the system instruction on the LLM config (with dynamic preferences)
-            self.llm.config.system_instruction = self._build_dynamic_system_prompt()
+            # Set the system instruction on the LLM config (with dynamic preferences and memory)
+            self.llm.config.system_instruction = self._build_dynamic_system_prompt(memory_context=memory_context)
 
             # Set tools on the LLM (for Gemini, these are FunctionDeclarations)
             self.llm.set_tools(agent_tools)
@@ -1438,8 +1683,25 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Reset operation counter for this request
         self.operation_count = 0
 
+        # Reset current turn data for episode tracking
+        self._current_turn_data = {
+            'user_message': user_message,
+            'agents_used': [],
+            'responses': [],
+            'intent': '',
+            'entities': []
+        }
+
         # Process with Hybrid Intelligence System v5.0 (async)
         intelligence = await self._process_with_intelligence(user_message)
+
+        # Update turn data with intelligence results
+        self._current_turn_data['intent'] = self._current_intent_type if hasattr(self, '_current_intent_type') else ''
+        self._current_turn_data['entities'] = [
+            {'type': str(getattr(e, 'type', 'unknown').value) if hasattr(getattr(e, 'type', None), 'value') else str(getattr(e, 'type', 'unknown')),
+             'value': str(getattr(e, 'value', str(e)))}
+            for e in intelligence.get('entities', [])
+        ]
 
         # Store current intent for agent usage tracking
         primary_intent = intelligence.get('primary_intent')
@@ -1470,6 +1732,11 @@ Provide a clear instruction describing what you want to accomplish.""",
                 message_to_send += f"\n\n[User's Explicit Instructions: {'; '.join(instruction_hints)}]"
                 if self.verbose:
                     print(f"{C.CYAN}📝 Applying {len(active_instructions)} explicit instruction(s){C.ENDC}")
+
+        # Add current datetime to each message (ensures time is always accurate)
+        # This overrides the stale datetime in system prompt
+        current_time_context = format_datetime_for_instruction()
+        message_to_send += f"\n\n{current_time_context}"
 
         # Check confidence and handle accordingly
         action, explanation = intelligence['action_recommendation']
@@ -1586,6 +1853,10 @@ Provide a clear instruction describing what you want to accomplish.""",
                 # Feature #11: Show completion (simple checkmark)
                 if self.verbose:
                     print(f"{C.GREEN}✓ {agent_name} completed{C.ENDC}")
+
+                # Track agent for episode storage
+                if agent_name not in self._current_turn_data['agents_used']:
+                    self._current_turn_data['agents_used'].append(agent_name)
 
                 # Feature #21: Track successful operation in duplicate detector
                 self.duplicate_detector.track_operation(agent_name, instruction, "", success=True)
@@ -1760,6 +2031,51 @@ Provide a clear instruction describing what you want to accomplish.""",
         # Prepend instruction confirmation if we stored a new instruction
         if instruction_confirmation:
             final_response = f"{instruction_confirmation}\n\n{final_response}"
+
+        # ===================================================================
+        # EPISODIC MEMORY STORAGE
+        # ===================================================================
+
+        # Store this interaction as episodic memory
+        await self._store_episode(
+            user_message=user_message,
+            final_response=final_response,
+            agents_used=self._current_turn_data['agents_used'],
+            intent_type=self._current_turn_data.get('intent', 'unknown'),
+            entities=self._current_turn_data.get('entities', []),
+            success=True
+        )
+
+        # ===================================================================
+        # INTELLIGENT MEMORY PROCESSING
+        # ===================================================================
+
+        # Process with intelligent memory (semantic extraction, entity graph update)
+        if hasattr(self, 'intelligent_memory'):
+            try:
+                await self.intelligent_memory.process_message(
+                    user_message=user_message,
+                    response=final_response,
+                    agents_used=self._current_turn_data['agents_used'],
+                    action_result={'success': True}
+                )
+            except Exception as e:
+                if self.verbose:
+                    print(f"[ORCHESTRATOR] Intelligent memory processing failed: {e}")
+
+        # Add to conversation session store for cross-session context
+        if hasattr(self, 'session_store'):
+            self.session_store.add_message(
+                user_message=user_message,
+                response=final_response,
+                agents_used=self._current_turn_data['agents_used']
+            )
+
+        # Reinforce preferences if this wasn't a correction (implicit acceptance)
+        if not is_correction:
+            # Get recently used preference keys and reinforce them
+            for key in list(self.user_prefs.instruction_memory.instructions.keys())[:5]:
+                self.user_prefs.reinforce_preference(key, boost=0.05)
 
         return self._log_and_return_response(final_response)
 
@@ -1989,6 +2305,34 @@ Provide a clear instruction describing what you want to accomplish.""",
             if stats['total_parses'] > 0:
                 print(f"{C.CYAN}  🔍 Instruction Parser: {stats['instructions_found']}/{stats['total_parses']} detected{C.ENDC}")
                 print(f"{C.CYAN}     Fast path: {stats['fast_path_rate']} | LLM calls: {stats['llm_call_rate']} | Cache: {stats['cache_hit_rate']}{C.ENDC}")
+
+        # Display episodic memory statistics
+        if hasattr(self, 'memory_store') and self.verbose:
+            stats = self.memory_store.get_statistics()
+            if stats['total_episodes'] > 0 or stats['episodes_stored_this_session'] > 0:
+                print(f"{C.CYAN}  🧠 Episodic Memory: {stats['total_episodes']} total episodes{C.ENDC}")
+                print(f"{C.CYAN}     This session: +{stats['episodes_stored_this_session']} stored, {stats['queries_made']} queries{C.ENDC}")
+                print(f"{C.CYAN}     Embedding cache: {stats['embedding_cache_size']} entries, {stats['cache_hits']} hits{C.ENDC}")
+
+        # End and save conversation session
+        if hasattr(self, 'session_store'):
+            try:
+                await self.session_store.end_session(llm_client=self.llm)
+                if self.verbose:
+                    sessions = self.session_store.get_recent_sessions()
+                    print(f"{C.CYAN}  💬 Session Store: {len(sessions)} sessions saved{C.ENDC}")
+            except Exception as e:
+                logger.warning(f"Failed to end session: {e}")
+
+        # End intelligent memory session
+        if hasattr(self, 'intelligent_memory'):
+            try:
+                await self.intelligent_memory.end_session()
+                if self.verbose:
+                    stats = self.intelligent_memory.get_statistics()
+                    print(f"{C.CYAN}  🧠 Intelligent Memory: {stats['total_entities']} entities, {stats['total_sessions']} sessions{C.ENDC}")
+            except Exception as e:
+                logger.warning(f"Failed to end intelligent memory session: {e}")
 
         # Display Hybrid Intelligence statistics
         if hasattr(self, 'hybrid_intelligence') and self.verbose:

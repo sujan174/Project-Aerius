@@ -18,6 +18,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from collections import Counter, defaultdict
 
+from intelligence.instruction_parser import InstructionMemory, ParsedInstruction
+
 
 @dataclass
 class ExplicitInstruction:
@@ -59,6 +61,15 @@ class WorkingHours:
     timezone_offset: int = 0  # UTC offset
 
     sample_count: int = 0
+    confidence: float = 0.0
+
+
+@dataclass
+class ImplicitPattern:
+    """Track implicit user patterns for automatic learning"""
+    pattern_key: str  # e.g., "reject_early_meetings"
+    occurrences: List[Dict] = field(default_factory=list)  # Individual observations
+    threshold: int = 3  # Occurrences needed to become preference
     confidence: float = 0.0
 
 
@@ -106,6 +117,15 @@ class UserPreferenceManager:
         # Statistics
         self.total_interactions = 0
         self.auto_executions = 0
+
+        # Single source of truth for instructions (consolidates old explicit_instructions)
+        self.instruction_memory = InstructionMemory(
+            storage_path=f"data/instructions_{user_id}.json",
+            verbose=verbose
+        )
+
+        # Pattern tracking for implicit learning
+        self.implicit_patterns: Dict[str, ImplicitPattern] = {}
 
     # =========================================================================
     # AGENT PREFERENCES
@@ -270,6 +290,165 @@ class UserPreferenceManager:
 
         # Check if it's during working hours
         return self.working_hours.typical_start_hour <= hour <= self.working_hours.typical_end_hour
+
+    # =========================================================================
+    # CONFIDENCE-BASED LEARNING
+    # =========================================================================
+
+    def reinforce_preference(self, key: str, boost: float = 0.1):
+        """
+        Boost confidence when user accepts a suggestion.
+
+        Called when: User accepts an agent suggestion without correction.
+        """
+        if key in self.instruction_memory.instructions:
+            record = self.instruction_memory.instructions[key]
+            record['confidence'] = min(1.0, record.get('confidence', 0.5) + boost)
+            self.instruction_memory._save()
+
+            if self.verbose:
+                print(f"[PREFS] Reinforced: {key} (confidence: {record['confidence']:.2f})")
+
+    def penalize_preference(self, key: str, penalty: float = 0.2):
+        """
+        Lower confidence when user corrects the bot.
+
+        Called when: User says "No, use X instead" or "That's wrong".
+        """
+        if key in self.instruction_memory.instructions:
+            record = self.instruction_memory.instructions[key]
+            record['confidence'] = max(0.0, record.get('confidence', 0.5) - penalty)
+            self.instruction_memory._save()
+
+            if self.verbose:
+                print(f"[PREFS] Penalized: {key} (confidence: {record['confidence']:.2f})")
+
+    def flip_preference(self, key: str, new_value: str, source: str = "user_correction"):
+        """
+        Replace preference value after explicit correction.
+
+        Called when: User explicitly provides new value.
+        """
+        if key in self.instruction_memory.instructions:
+            record = self.instruction_memory.instructions[key]
+            old_value = record.get('value', '')
+            record['value'] = new_value
+            record['confidence'] = 0.9  # High confidence for explicit correction
+            record['source'] = source
+            record['created_at'] = time.time()
+            self.instruction_memory._save()
+
+            if self.verbose:
+                print(f"[PREFS] Flipped: {key} = {old_value} -> {new_value}")
+        else:
+            # Create new preference if it doesn't exist
+            parsed = ParsedInstruction(
+                is_instruction=True,
+                category='preference',
+                key=key,
+                value=new_value,
+                original_message=f"[User correction: {new_value}]",
+                confidence=0.9,
+                reasoning="Explicit user correction"
+            )
+            self.instruction_memory.add(parsed)
+
+            if self.verbose:
+                print(f"[PREFS] Created from correction: {key} = {new_value}")
+
+    # =========================================================================
+    # IMPLICIT PATTERN DETECTION
+    # =========================================================================
+
+    def record_pattern_occurrence(
+        self,
+        pattern_key: str,
+        observation: Dict,
+        auto_promote: bool = True
+    ):
+        """
+        Record an implicit pattern occurrence.
+
+        Examples:
+        - User rejects meeting at 8 AM -> pattern_key="reject_hour_8"
+        - User always uses Jira for bugs -> pattern_key="agent_for_bug"
+
+        After 3 occurrences with same value, auto-promote to learned preference.
+        """
+        if pattern_key not in self.implicit_patterns:
+            self.implicit_patterns[pattern_key] = ImplicitPattern(
+                pattern_key=pattern_key,
+                occurrences=[]
+            )
+
+        pattern = self.implicit_patterns[pattern_key]
+        pattern.occurrences.append({
+            **observation,
+            'timestamp': time.time()
+        })
+
+        # Check if should auto-promote to preference
+        if auto_promote and len(pattern.occurrences) >= pattern.threshold:
+            self._promote_pattern_to_preference(pattern)
+
+        if self.verbose:
+            print(f"[PREFS] Recorded pattern: {pattern_key} ({len(pattern.occurrences)}/{pattern.threshold})")
+
+    def _promote_pattern_to_preference(self, pattern: ImplicitPattern):
+        """Promote implicit pattern to learned preference"""
+        # Analyze occurrences to extract common value
+        if not pattern.occurrences:
+            return
+
+        # Extract values and find most common
+        values = [o.get('value') for o in pattern.occurrences if o.get('value') is not None]
+        if not values:
+            return
+
+        most_common, count = Counter(values).most_common(1)[0]
+
+        if count >= pattern.threshold:
+            # Determine category and key from pattern_key
+            category, key = self._parse_pattern_key(pattern.pattern_key)
+
+            # Add as learned preference with medium confidence
+            parsed = ParsedInstruction(
+                is_instruction=True,
+                category=category,
+                key=key,
+                value=str(most_common),
+                original_message=f"[Auto-learned from {count} observations]",
+                confidence=0.75,
+                reasoning=f"Detected consistent pattern across {count} interactions"
+            )
+            self.instruction_memory.add(parsed)
+
+            if self.verbose:
+                print(f"[PREFS] Auto-promoted pattern: {key} = {most_common}")
+
+    def _parse_pattern_key(self, pattern_key: str) -> tuple:
+        """Parse pattern key into category and preference key"""
+        # Pattern key format: "category_action" or just "action"
+        parts = pattern_key.split('_', 1)
+
+        if len(parts) == 2:
+            prefix = parts[0]
+            key = parts[1]
+
+            # Map prefixes to categories
+            category_map = {
+                'agent': 'default',
+                'reject': 'behavior',
+                'prefer': 'preference',
+                'style': 'style',
+                'time': 'timezone',
+                'format': 'formatting'
+            }
+
+            category = category_map.get(prefix, 'preference')
+            return (category, pattern_key)
+        else:
+            return ('preference', pattern_key)
 
     # =========================================================================
     # EXPLICIT INSTRUCTIONS

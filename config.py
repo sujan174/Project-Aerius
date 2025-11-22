@@ -56,6 +56,26 @@ class Config:
         'intelligence': os.getenv('LOG_LEVEL_INTELLIGENCE', LOG_LEVEL),
     }
 
+    # =========================================================================
+    # MEMORY CONFIGURATION
+    # =========================================================================
+
+    # Episodic Memory Store
+    MEMORY_PERSIST_DIRECTORY = os.getenv("MEMORY_DIR", "data/memory")
+    MEMORY_MIN_SIMILARITY = float(os.getenv("MEMORY_MIN_SIMILARITY", "0.75"))
+    MEMORY_MAX_RESULTS = int(os.getenv("MEMORY_MAX_RESULTS", "5"))
+    MEMORY_RETENTION_DAYS = int(os.getenv("MEMORY_RETENTION_DAYS", "90"))
+
+    # =========================================================================
+    # LEARNING CONFIGURATION
+    # =========================================================================
+
+    # Preference Learning
+    LEARNING_CONFIDENCE_THRESHOLD = float(os.getenv("LEARNING_THRESHOLD", "0.7"))
+    LEARNING_PATTERN_THRESHOLD = int(os.getenv("PATTERN_THRESHOLD", "3"))
+    LEARNING_REINFORCE_BOOST = float(os.getenv("REINFORCE_BOOST", "0.1"))
+    LEARNING_PENALIZE_AMOUNT = float(os.getenv("PENALIZE_AMOUNT", "0.2"))
+
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
         """Return all config values as a dictionary."""
@@ -66,4 +86,14 @@ class Config:
             'max_retry_attempts': cls.MAX_RETRY_ATTEMPTS,
             'max_instruction_length': cls.MAX_INSTRUCTION_LENGTH,
             'verbose': cls.VERBOSE,
+            # Memory configuration
+            'memory_persist_directory': cls.MEMORY_PERSIST_DIRECTORY,
+            'memory_min_similarity': cls.MEMORY_MIN_SIMILARITY,
+            'memory_max_results': cls.MEMORY_MAX_RESULTS,
+            'memory_retention_days': cls.MEMORY_RETENTION_DAYS,
+            # Learning configuration
+            'learning_confidence_threshold': cls.LEARNING_CONFIDENCE_THRESHOLD,
+            'learning_pattern_threshold': cls.LEARNING_PATTERN_THRESHOLD,
+            'learning_reinforce_boost': cls.LEARNING_REINFORCE_BOOST,
+            'learning_penalize_amount': cls.LEARNING_PENALIZE_AMOUNT,
         }
