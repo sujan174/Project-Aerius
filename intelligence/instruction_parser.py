@@ -150,18 +150,19 @@ class IntelligentInstructionParser:
         message_lower = message.lower()
 
         # Skip patterns handled by update_user_fact tool - don't waste LLM calls
-        # These include: identity, timezone, defaults
+        # These include: identity, timezone, defaults, communication style
         skip_patterns = ['default project', 'default assignee', 'my name is', 'i am ',
                         'my email', 'my mail', 'timezone', 'time zone',
-                        'use est', 'use pst', 'use ist', 'use utc', 'use gmt']
+                        'use est', 'use pst', 'use ist', 'use utc', 'use gmt',
+                        'be concise', 'be verbose', 'be normal', 'be brief', 'be detailed']
         if any(pattern in message_lower for pattern in skip_patterns):
             return False
 
         # Strong instruction indicators - behavioral/workflow patterns only
-        # Note: Identity, timezone, and defaults are handled by orchestrator's update_user_fact tool
+        # Note: Identity, timezone, defaults, and communication style are handled by update_user_fact tool
         strong_indicators = [
             'from now on', 'from now', 'remember that', 'always use', 'never use',
-            'my preference', 'always confirm', 'never send', 'be concise', 'be verbose',
+            'my preference', 'always confirm', 'never send',
         ]
 
         if any(indicator in message_lower for indicator in strong_indicators):
@@ -170,8 +171,8 @@ class IntelligentInstructionParser:
         # Weak indicators - need multiple to trigger
         weak_indicators = ['remember', 'always', 'never', 'prefer']
 
-        # Behavioral/formatting words (not identity/defaults)
-        behavior_words = ['verbose', 'concise', 'format', 'style', 'confirm', 'notify']
+        # Behavioral/formatting words (not communication style - that's handled by update_user_fact)
+        behavior_words = ['format', 'style', 'confirm', 'notify']
 
         weak_count = sum(1 for w in weak_indicators if w in message_lower)
         behavior_count = sum(1 for w in behavior_words if w in message_lower)
@@ -278,9 +279,11 @@ JSON response only:
             )
 
         # Skip patterns handled by update_user_fact tool
-        # These include: default project, default assignee, timezone, name, email
+        # These include: default project, default assignee, timezone, name, email, communication style
         skip_patterns = ['default project', 'default assignee', 'my name is', 'my email',
-                        'timezone', 'time zone', 'use est', 'use pst', 'use ist', 'use utc']
+                        'timezone', 'time zone', 'use est', 'use pst', 'use ist', 'use utc',
+                        'be concise', 'be verbose', 'be normal', 'be brief', 'be detailed',
+                        'concise', 'verbose', 'normal']
         if any(pattern in message_lower for pattern in skip_patterns):
             return ParsedInstruction(
                 is_instruction=False,
@@ -292,27 +295,32 @@ JSON response only:
                 reasoning="Handled by update_user_fact tool, not instruction parser (heuristic)"
             )
 
-        # Only store behavioral/workflow instructions
+        # Only store behavioral/workflow instructions (not communication style)
         if has_behavioral_indicator:
-            # Try to extract a meaningful key
+            # Try to extract a meaningful key and value
             key = 'behavior'
             category = 'behavior'
+            value = message  # Default to full message
 
-            if 'concise' in message_lower:
-                key = 'response_style'
-                category = 'formatting'
-            elif 'verbose' in message_lower:
-                key = 'response_style'
-                category = 'formatting'
-            elif 'confirm' in message_lower:
+            # Extract specific values for formatting preferences (excluding communication style)
+            if 'confirm' in message_lower:
                 key = 'confirm_before_action'
                 category = 'behavior'
+                value = 'true'
+            elif 'bullet' in message_lower:
+                key = 'list_format'
+                category = 'formatting'
+                value = 'bullet_points'
+            elif 'emoji' in message_lower:
+                key = 'use_emojis'
+                category = 'formatting'
+                value = 'true' if 'use' in message_lower else 'false'
 
             return ParsedInstruction(
                 is_instruction=True,
                 category=category,
                 key=key,
-                value=message,
+                value=value,
                 original_message=message,
                 confidence=0.6,
                 reasoning="Detected behavioral instruction pattern (heuristic)"

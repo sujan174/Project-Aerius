@@ -506,6 +506,7 @@ When users share personal information, preferences, or settings, save them using
 - Their name ("I'm John", "My name is Sarah", "Call me Mike")
 - Their email ("My email is john@example.com", "mail me at...")
 - Their timezone ("I'm in EST", "Use PST", "My timezone is IST")
+- Communication style ("Be concise", "Be verbose", "Be normal", "Keep responses short")
 - Preferences ("Always use dark mode", "I prefer bullet points")
 - Defaults ("My default project is PROJ-1", "Assign tickets to me by default")
 
@@ -520,6 +521,8 @@ When users share personal information, preferences, or settings, save them using
 - User says "My email is alex@work.com" → call update_user_fact(action="add", key="user_email", value="alex@work.com", category="identity")
 - User says "me email is test@example.com" → call update_user_fact(action="add", key="user_email", value="test@example.com", category="identity")
 - User says "Use EST timezone" → call update_user_fact(action="add", key="timezone", value="EST", category="preference")
+- User says "Be concise" → call update_user_fact(action="add", key="communication_style", value="concise", category="preference")
+- User says "Be normal" → call update_user_fact(action="add", key="communication_style", value="normal", category="preference")
 
 **IMPORTANT**: When the user shares personal info like their email, you MUST call the update_user_fact tool. Do NOT respond with an error - use the tool to save the information.
 
@@ -1875,23 +1878,16 @@ Actions:
                 r"(?:my email is|my mail is|email me at|mail me at|reach me at)\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
                 r"(?:email|mail)\s+(?:is\s+)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
             ]
-            print(f"{C.YELLOW}[DEBUG] Checking email patterns in: '{user_message}'{C.ENDC}")
-            email_found = False
-            for i, pattern in enumerate(email_patterns):
+            for pattern in email_patterns:
                 match = re.search(pattern, user_message, re.IGNORECASE)
                 if match:
                     detected_email = match.group(1).strip().lower()
-                    print(f"{C.GREEN}[DEBUG] Pattern {i+1} matched! Email: {detected_email}{C.ENDC}")
                     self.unified_memory.set_core_fact('user_email', detected_email, 'identity', 'pattern_fallback')
-                    print(f"{C.GREEN}[DEBUG] Email saved to core_facts and flushed to disk{C.ENDC}")
                     if self.verbose:
                         print(f"{C.CYAN}📧 Email detected (fallback): {detected_email}{C.ENDC}")
                     if not instruction_confirmation:
                         instruction_confirmation = f"📧 Email set to {detected_email}"
-                    email_found = True
                     break
-            if not email_found:
-                print(f"{C.YELLOW}[DEBUG] No email pattern matched{C.ENDC}")
 
         # ===================================================================
 
@@ -2023,7 +2019,6 @@ Actions:
             )
             
             if not has_function_call:
-                print(f"{C.YELLOW}[DEBUG] No function call in response, breaking loop{C.ENDC}")
                 break
 
             # Get the function call
@@ -2037,7 +2032,6 @@ Actions:
                 break
 
             tool_name = function_call.name
-            print(f"{C.CYAN}[DEBUG] Function call received: {tool_name}{C.ENDC}")
 
             # Extract agent name from tool name (use_X_agent -> X)
             if tool_name.startswith("use_") and tool_name.endswith("_agent"):

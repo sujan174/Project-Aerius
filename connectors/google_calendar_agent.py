@@ -1213,10 +1213,39 @@ Remember: Calendar management is about respecting time - the most finite resourc
             iteration = 0
             actions_taken = []
 
+            malformed_retry_count = 0
+            max_malformed_retries = 2
+
             while iteration < max_iterations:
                 function_call = self._extract_function_call(response)
 
                 if not function_call:
+                    # Check if this was due to a malformed function call
+                    if hasattr(response, 'candidates') and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'finish_reason'):
+                            finish_reason = str(candidate.finish_reason)
+                            if 'MALFORMED' in finish_reason.upper():
+                                malformed_retry_count += 1
+                                if malformed_retry_count <= max_malformed_retries:
+                                    # Retry with simpler instruction
+                                    if self.verbose:
+                                        print(f"[GOOGLE CALENDAR AGENT] Retrying with simpler instruction ({malformed_retry_count}/{max_malformed_retries})")
+
+                                    # Simplify the instruction for retry
+                                    simplified = f"Please complete this task step by step, one operation at a time: {resolved_instruction}"
+                                    response = await chat.send_message_async(simplified)
+                                    continue
+                                else:
+                                    # Max retries reached, return helpful error
+                                    return (
+                                        "❌ **Calendar Event Creation Failed**\n\n"
+                                        "The request is too complex for a single operation. "
+                                        "Please try:\n"
+                                        "• Creating one event at a time\n"
+                                        "• Providing simpler event details\n"
+                                        "• Breaking multi-event requests into separate commands"
+                                    )
                     break
 
                 tool_name = function_call.name
@@ -1345,19 +1374,34 @@ Remember: Calendar management is about respecting time - the most finite resourc
             return 'unknown'
 
     def _extract_function_call(self, response) -> Optional[Any]:
-        """Extract function call from LLM response"""
-        parts = response.candidates[0].content.parts
-        has_function_call = any(
-            hasattr(part, 'function_call') and part.function_call
-            for part in parts
-        )
+        """Extract function call from LLM response, handling malformed calls"""
+        # Check for MALFORMED_FUNCTION_CALL error
+        if hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'finish_reason'):
+                finish_reason = str(candidate.finish_reason)
+                if 'MALFORMED' in finish_reason.upper():
+                    if self.verbose:
+                        print(f"[GOOGLE CALENDAR AGENT] ⚠ Malformed function call detected: {finish_reason}")
+                    # Return None to break the loop - will be handled as error
+                    return None
 
-        if not has_function_call:
-            return None
+        try:
+            parts = response.candidates[0].content.parts
+            has_function_call = any(
+                hasattr(part, 'function_call') and part.function_call
+                for part in parts
+            )
 
-        for part in parts:
-            if hasattr(part, 'function_call') and part.function_call:
-                return part.function_call
+            if not has_function_call:
+                return None
+
+            for part in parts:
+                if hasattr(part, 'function_call') and part.function_call:
+                    return part.function_call
+        except Exception as e:
+            if self.verbose:
+                print(f"[GOOGLE CALENDAR AGENT] Error extracting function call: {e}")
 
         return None
 

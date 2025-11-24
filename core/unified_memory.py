@@ -254,7 +254,22 @@ class UnifiedMemory:
             if category in by_category:
                 facts = by_category[category]
                 for fact in sorted(facts, key=lambda f: -f.importance):
-                    lines.append(f"- **{fact.key}**: {fact.value}")
+                    # Special formatting to make preferences actionable
+                    if fact.key == 'communication_style':
+                        if fact.value == 'concise':
+                            lines.append(f"- **{fact.key}**: {fact.value} - Keep responses brief and to the point")
+                        elif fact.value == 'verbose':
+                            lines.append(f"- **{fact.key}**: {fact.value} - Provide detailed explanations")
+                        else:
+                            lines.append(f"- **{fact.key}**: {fact.value}")
+                    elif 'confirmation' in fact.key:
+                        # Only include if true (false is default behavior, wastes tokens)
+                        if fact.value == 'true':
+                            action_type = fact.key.replace('_confirmation', '').replace('_', ' ')
+                            lines.append(f"- **{fact.key}**: {fact.value} - ALWAYS ask for confirmation before {action_type} actions")
+                        # Skip false values entirely
+                    else:
+                        lines.append(f"- **{fact.key}**: {fact.value}")
 
         return "\n".join(lines)
 
