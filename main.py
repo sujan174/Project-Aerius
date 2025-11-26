@@ -288,24 +288,11 @@ async def run_interactive_session(orchestrator: OrchestratorAgent, ui: EnhancedT
 
     while True:
         try:
-            # Show prompt
-            ui.print_prompt()
-
-            # Get user input
-            user_input = input().strip()
+            # Get user input with improved prompt
+            user_input = await ui.get_input()
 
             # Handle exit
             if user_input.lower() in ['exit', 'quit', 'bye', 'q']:
-                # Show stats
-                import time
-                duration = time.time() - orchestrator.analytics.start_time if hasattr(orchestrator, 'analytics') else 0
-                stats = {
-                    'duration': f"{int(duration)}s" if duration else "N/A",
-                    'message_count': message_count,
-                    'agent_calls': sum(ui.agent_calls.values()),
-                    'success_rate': "N/A"
-                }
-                ui.print_session_stats(stats)
                 ui.print_goodbye()
                 break
 
@@ -317,11 +304,17 @@ async def run_interactive_session(orchestrator: OrchestratorAgent, ui: EnhancedT
             # Show thinking
             ui.print_thinking()
 
-            # Process message with orchestrator
+            # Process message with orchestrator (with timing)
+            import time
+            start_time = time.time()
             response = await process_with_ui(orchestrator, user_input, ui)
+            elapsed_time = time.time() - start_time
 
             # Show response
             ui.print_response(response)
+
+            # Show response time
+            ui.console.print(f"[dim]Response time: {elapsed_time:.2f}s[/dim]\n")
 
         except KeyboardInterrupt:
             ui.print_goodbye()
@@ -353,7 +346,7 @@ async def process_with_ui(
             result = await original_call_sub_agent(agent_name, instruction, context)
 
             # Show success
-            success = not (result.startswith("Error") or result.startswith("⚠️"))
+            success = not (result.startswith("Error") or result.startswith("Warning"))
             ui.print_tool_result(success, result[:50] if success else result[:100])
 
             return result

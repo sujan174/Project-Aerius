@@ -35,7 +35,7 @@ try:
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
-    print("⚠️  Installing rich library for better UI...")
+    print("Installing rich library for better UI...")
     import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "rich"])
     from rich.console import Console
@@ -87,6 +87,47 @@ class EnhancedTerminalUI:
         self.message_count = 0
         self.agent_calls = {}
 
+        # Setup prompt_toolkit for better input
+        self._setup_input()
+
+    def _setup_input(self):
+        """Setup prompt_toolkit for multi-line input with Alt+Enter"""
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+
+        # Setup key bindings: Enter to submit, Alt+Enter for newline
+        kb = KeyBindings()
+
+        @kb.add(Keys.Enter)
+        def _(event):
+            """Enter submits"""
+            event.current_buffer.validate_and_handle()
+
+        @kb.add(Keys.Escape, Keys.Enter)  # Alt+Enter
+        def _(event):
+            """Alt+Enter for newline"""
+            event.current_buffer.insert_text('\n')
+
+        self.prompt_session = PromptSession(
+            multiline=True,
+            enable_history_search=True,
+            key_bindings=kb
+        )
+
+    async def get_input(self) -> str:
+        """Get user input with multi-line support (Alt+Enter for newline)"""
+        try:
+            from prompt_toolkit.formatted_text import HTML
+            user_input = await self.prompt_session.prompt_async(
+                HTML('<cyan>You › </cyan>'),
+                vi_mode=False,
+                mouse_support=False
+            )
+            return user_input.strip()
+        except (KeyboardInterrupt, EOFError):
+            return "exit"
+
     def clear_screen(self):
         """Clear terminal screen"""
         self.console.clear()
@@ -125,7 +166,7 @@ class EnhancedTerminalUI:
     def print_agent_discovery(self, agents: List[Dict[str, Any]]):
         """Show agent discovery progress"""
         self.console.print()
-        self.console.print("[bold cyan]🔌 Discovering Agents...[/bold cyan]")
+        self.console.print("[bold cyan]Discovering Agents...[/bold cyan]")
         self.console.print()
 
         # Create table
@@ -147,9 +188,9 @@ class EnhancedTerminalUI:
             caps = agent.get('capabilities', [])
 
             if status == 'loaded':
-                status_text = "[green]✓ Loaded[/green]"
+                status_text = "[green]Loaded[/green]"
             elif status == 'failed':
-                status_text = "[yellow]⚠ Skipped[/yellow]"
+                status_text = "[yellow]Skipped[/yellow]"
             else:
                 status_text = "[dim]...[/dim]"
 
@@ -166,11 +207,11 @@ class EnhancedTerminalUI:
         """Print summary after agent loading"""
         if failed_count > 0:
             summary = (
-                f"[green]✓[/green] Loaded [bold white]{loaded_count}[/bold white] agent(s)  "
-                f"[yellow]⚠[/yellow] Skipped [bold white]{failed_count}[/bold white]"
+                f"[green]Loaded [bold white]{loaded_count}[/bold white] agent(s)  "
+                f"[yellow]Skipped [bold white]{failed_count}[/bold white][/yellow]"
             )
         else:
-            summary = f"[green]✓[/green] All [bold white]{loaded_count}[/bold white] agents loaded successfully"
+            summary = f"[green]All [bold white]{loaded_count}[/bold white] agents loaded successfully[/green]"
 
         panel = Panel(
             summary,
@@ -248,7 +289,6 @@ class EnhancedTerminalUI:
 
         status = Text()
         status.append("┃  ", style="bold cyan")
-        status.append("🔧 ", style="yellow")
         status.append(f"Calling ", style="dim")
         status.append(agent_name.title(), style="bold #FF88FF")
         status.append(f" → {tool_name}", style="dim")
@@ -260,7 +300,6 @@ class EnhancedTerminalUI:
         if success:
             status = Text()
             status.append("┃  ", style="bold cyan")
-            status.append("✓ ", style="green")
             status.append("Success", style="dim green")
             if message:
                 status.append(f" • {message[:50]}", style="dim")
@@ -268,7 +307,6 @@ class EnhancedTerminalUI:
         else:
             status = Text()
             status.append("┃  ", style="bold cyan")
-            status.append("✗ ", style="red")
             status.append("Failed", style="dim red")
             if message:
                 status.append(f" • {message[:50]}", style="dim")
@@ -279,7 +317,7 @@ class EnhancedTerminalUI:
         self.console.print()
 
         error_panel = Panel(
-            f"[bold red]✗ Error[/bold red]\n\n{error}",
+            f"[bold red]Error[/bold red]\n\n{error}",
             title="[red]Error[/red]",
             border_style="red",
             box=box.HEAVY,
@@ -299,37 +337,6 @@ class EnhancedTerminalUI:
 
         self.console.print()
 
-    def print_session_stats(self, stats: Dict[str, Any]):
-        """Print session statistics"""
-        self.console.print()
-        self.console.rule("[bold cyan]Session Summary[/bold cyan]", style="cyan")
-
-        stats_table = Table(
-            show_header=False,
-            border_style="cyan",
-            box=box.ROUNDED,
-            padding=(0, 2)
-        )
-
-        stats_table.add_row(
-            "[cyan]Duration[/cyan]",
-            f"[white]{stats.get('duration', 'N/A')}[/white]"
-        )
-        stats_table.add_row(
-            "[cyan]Messages[/cyan]",
-            f"[white]{stats.get('message_count', 0)}[/white]"
-        )
-        stats_table.add_row(
-            "[cyan]Agent Calls[/cyan]",
-            f"[white]{stats.get('agent_calls', 0)}[/white]"
-        )
-        stats_table.add_row(
-            "[cyan]Success Rate[/cyan]",
-            f"[green]{stats.get('success_rate', 'N/A')}[/green]"
-        )
-
-        self.console.print(stats_table)
-        self.console.print()
 
     def print_goodbye(self):
         """Print goodbye message"""
@@ -337,7 +344,6 @@ class EnhancedTerminalUI:
 
         goodbye_text = Text()
         goodbye_text.append("┃ ", style="bold cyan")
-        goodbye_text.append("👋 ", style="")
         goodbye_text.append("Goodbye! ", style="bold white")
         goodbye_text.append("Thanks for using the orchestrator.", style="dim")
 

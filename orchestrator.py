@@ -63,6 +63,9 @@ from intelligence.instruction_parser import (
 # Import unified memory system (consolidates all memory systems)
 from core.unified_memory import UnifiedMemory, MemoryIntentType
 
+# Import Memory Agent
+from connectors.memory_agent import MemoryAgent
+
 logger = get_logger(__name__)
 load_dotenv()
 
@@ -263,6 +266,11 @@ class OrchestratorAgent:
         )
 
         # ===================================================================
+        # REMOVED: Query classification (fast + unified classifiers)
+        # Modern LLMs handle intent detection natively - no preprocessing needed
+        # ===================================================================
+
+        # ===================================================================
         # NEW ENHANCEMENT SYSTEMS (Retry, Undo, Preferences, Analytics)
         # ===================================================================
 
@@ -344,6 +352,14 @@ class OrchestratorAgent:
 
         # Core facts are loaded from unified_memory's own persistence
         # Don't copy from instruction_memory as it may have incorrectly parsed data
+
+        # Initialize Memory Agent (handles all memory operations)
+        self.memory_agent = MemoryAgent(
+            unified_memory=self.unified_memory,
+            verbose=self.verbose
+        )
+        # Note: Memory agent will be initialized and added to sub_agents
+        # in a separate async method since __init__ is synchronous
 
         # Track current turn data for episode storage
         self._current_turn_data = {
@@ -500,31 +516,23 @@ Would you like me to notify one of these available channels instead?
 
 # Saving User Information
 
-When users share personal information, preferences, or settings, save them using the update_user_fact tool. This ensures you remember them in future conversations.
+When users share personal information, preferences, or settings, use the memory agent to save them. This ensures you remember them in future conversations.
 
 **Always save when the user tells you:**
 - Their name ("I'm John", "My name is Sarah", "Call me Mike")
 - Their email ("My email is john@example.com", "mail me at...")
 - Their timezone ("I'm in EST", "Use PST", "My timezone is IST")
-- Communication style ("Be concise", "Be verbose", "Be normal", "Keep responses short")
+- Communication style ("Be concise", "Be verbose", "Be normal")
 - Preferences ("Always use dark mode", "I prefer bullet points")
 - Defaults ("My default project is PROJ-1", "Assign tickets to me by default")
 
-**Use the appropriate category:**
-- identity: name, email, role, title
-- preference: timezone, format, style
-- default: default_project, default_assignee
-- context: current_focus, active_project
-
 **Example usage:**
-- User says "I'm Alex" → call update_user_fact(action="add", key="user_name", value="Alex", category="identity")
-- User says "My email is alex@work.com" → call update_user_fact(action="add", key="user_email", value="alex@work.com", category="identity")
-- User says "me email is test@example.com" → call update_user_fact(action="add", key="user_email", value="test@example.com", category="identity")
-- User says "Use EST timezone" → call update_user_fact(action="add", key="timezone", value="EST", category="preference")
-- User says "Be concise" → call update_user_fact(action="add", key="communication_style", value="concise", category="preference")
-- User says "Be normal" → call update_user_fact(action="add", key="communication_style", value="normal", category="preference")
+- User says "I'm Alex" → use_memory_agent(instruction="Store user_name: Alex")
+- User says "My email is alex@work.com" → use_memory_agent(instruction="Store user_email: alex@work.com")
+- User says "Use EST timezone" → use_memory_agent(instruction="Store timezone: EST")
+- User says "Be concise" → use_memory_agent(instruction="Store communication_style: concise")
 
-**IMPORTANT**: When the user shares personal info like their email, you MUST call the update_user_fact tool. Do NOT respond with an error - use the tool to save the information.
+**Memory operations are fast** - the memory agent returns immediately after storing, so you can continue without waiting.
 
 After saving, briefly confirm ("Got it, I'll remember that.") and continue with the conversation.
 
@@ -995,7 +1003,7 @@ Examples:
         async def undo_jira_delete(undo_params: Dict) -> str:
             """Undo Jira issue deletion (note: actual deletion is usually permanent)"""
             issue_key = undo_params.get('issue_key')
-            return f"⚠️ Cannot restore deleted issue {issue_key} - deletion is permanent. Consider recreating it manually."
+            return f"Warning: Cannot restore deleted issue {issue_key} - deletion is permanent. Consider recreating it manually."
 
         async def undo_jira_transition(undo_params: Dict) -> str:
             """Undo Jira issue transition by reverting to previous status"""
@@ -1006,15 +1014,15 @@ Examples:
             if agent:
                 instruction = f"Transition {issue_key} back to '{previous_status}' status"
                 result = await agent.execute(instruction)
-                return f"✓ Reverted {issue_key} to {previous_status}: {result}"
-            return f"❌ Jira agent not available"
+                return f"Success: Reverted {issue_key} to {previous_status}: {result}"
+            return f"Error: Jira agent not available"
 
         # Slack undo handlers
         async def undo_slack_delete_message(undo_params: Dict) -> str:
             """Undo Slack message deletion (note: usually permanent)"""
             channel = undo_params.get('channel')
             message_text = undo_params.get('message_text', '')
-            return f"⚠️ Cannot restore deleted message in {channel} - deletion is permanent. Original message: {message_text[:100]}"
+            return f"Warning: Cannot restore deleted message in {channel} - deletion is permanent. Original message: {message_text[:100]}"
 
         # GitHub undo handlers
         async def undo_github_close_pr(undo_params: Dict) -> str:
@@ -1026,8 +1034,8 @@ Examples:
             if agent:
                 instruction = f"Reopen pull request #{pr_number} in {repo}"
                 result = await agent.execute(instruction)
-                return f"✓ Reopened PR #{pr_number}: {result}"
-            return f"❌ GitHub agent not available"
+                return f"Success: Reopened PR #{pr_number}: {result}"
+            return f"Error: GitHub agent not available"
 
         async def undo_github_close_issue(undo_params: Dict) -> str:
             """Undo GitHub issue closure by reopening"""
@@ -1038,14 +1046,14 @@ Examples:
             if agent:
                 instruction = f"Reopen issue #{issue_number} in {repo}"
                 result = await agent.execute(instruction)
-                return f"✓ Reopened issue #{issue_number}: {result}"
-            return f"❌ GitHub agent not available"
+                return f"Success: Reopened issue #{issue_number}: {result}"
+            return f"Error: GitHub agent not available"
 
         # Notion undo handlers
         async def undo_notion_delete_page(undo_params: Dict) -> str:
             """Undo Notion page deletion (note: usually permanent)"""
             page_title = undo_params.get('page_title', 'Unknown')
-            return f"⚠️ Cannot restore deleted Notion page '{page_title}' - deletion is permanent."
+            return f"Warning: Cannot restore deleted Notion page '{page_title}' - deletion is permanent."
 
         # Register all handlers
         self.undo_manager.register_undo_handler(UndoableOperationType.JIRA_DELETE_ISSUE, undo_jira_delete)
@@ -1263,7 +1271,34 @@ Examples:
             if failed > 0:
                 print(f"{C.YELLOW}⚠ {failed} agent(s) failed to load but system will continue.{C.ENDC}")
             print(f"{C.YELLOW}{'='*60}{C.ENDC}\n")
-    
+
+    async def _initialize_memory_agent(self):
+        """Initialize and register the memory agent"""
+        try:
+            # Initialize the memory agent
+            await self.memory_agent.initialize()
+
+            # Get capabilities
+            capabilities = await self.memory_agent.get_capabilities()
+
+            # Register in sub_agents
+            self.sub_agents['memory'] = self.memory_agent
+            self.agent_capabilities['memory'] = capabilities
+            self.agent_health['memory'] = {
+                'status': 'healthy',
+                'last_success': asyncio.get_event_loop().time(),
+                'error_count': 0
+            }
+
+            if self.verbose:
+                print(f"{C.GREEN}✓ Memory agent initialized{C.ENDC}")
+
+        except Exception as e:
+            if self.verbose:
+                print(f"{C.YELLOW}⚠ Memory agent failed to initialize: {e}{C.ENDC}")
+            # Continue without memory agent (graceful degradation)
+            pass
+
     def _create_agent_tools(self) -> List[protos.FunctionDeclaration]:
         """Convert sub-agents into Gemini tools"""
         tools = []
@@ -1296,44 +1331,8 @@ Provide a clear instruction describing what you want to accomplish.""",
             )
             tools.append(tool)
 
-        # Add update_user_fact tool for managing core facts
-        update_fact_tool = protos.FunctionDeclaration(
-            name="update_user_fact",
-            description="""Save, update, or remove user information like name, email, timezone, or preferences.
-
-Use this tool when the user:
-- Tells you their name, email, or other personal info
-- Wants to change their timezone or preferences
-- Asks you to remember something about them
-- Wants you to forget/remove a saved fact
-
-Actions:
-- "add": Save a new fact or update existing
-- "remove": Delete a saved fact""",
-            parameters=protos.Schema(
-                type_=protos.Type.OBJECT,
-                properties={
-                    "action": protos.Schema(
-                        type_=protos.Type.STRING,
-                        description="Action to perform: 'add' or 'remove'"
-                    ),
-                    "key": protos.Schema(
-                        type_=protos.Type.STRING,
-                        description="Fact key (e.g., 'user_name', 'user_email', 'timezone')"
-                    ),
-                    "value": protos.Schema(
-                        type_=protos.Type.STRING,
-                        description="Fact value (required for 'add' action)"
-                    ),
-                    "category": protos.Schema(
-                        type_=protos.Type.STRING,
-                        description="Category: 'identity' (name/email), 'preference' (timezone/format), 'default' (project/assignee), 'context' (current focus)"
-                    )
-                },
-                required=["action", "key"]
-            )
-        )
-        tools.append(update_fact_tool)
+        # Memory agent is now a regular agent with use_memory_agent tool
+        # No need for separate update_user_fact tool
 
         if self.verbose:
             tool_names = [t.name for t in tools]
@@ -1354,7 +1353,7 @@ Actions:
         # Check circuit breaker before attempting execution
         allowed, reason = await self.circuit_breaker.can_execute(agent_name)
         if not allowed:
-            error_msg = f"⚠️ {reason}"
+            error_msg = f"Warning: {reason}"
             print(f"{C.YELLOW}{error_msg}{C.ENDC}")
             return error_msg
 
@@ -1362,7 +1361,7 @@ Actions:
         if agent_name in self.agent_health:
             health = self.agent_health[agent_name]
             if health['status'] == 'unavailable':
-                error_msg = f"⚠️ {agent_name} agent is currently unavailable: {health.get('error_message', 'Unknown error')}"
+                error_msg = f"Warning: {agent_name} agent is currently unavailable: {health.get('error_message', 'Unknown error')}"
                 print(f"{C.YELLOW}{error_msg}{C.ENDC}")
                 return error_msg
 
@@ -1397,7 +1396,7 @@ Actions:
 
             # Log task completed
             if hasattr(self, 'orch_logger'):
-                success = result and not result.startswith("⚠️") and not result.startswith("❌")
+                success = result and not result.startswith("Warning") and not result.startswith("Error")
                 self.orch_logger.log_task_completed(
                     task_id=task_id,
                     success=success,
@@ -1482,8 +1481,7 @@ Actions:
 
             # Determine success (safely handle potential None)
             success = (result and
-                      not result.startswith("⚠️") and
-                      not result.startswith("❌") and
+                      not result.startswith("Warning") and
                       not result.startswith("Error"))
             error = result if not success else None
 
@@ -1751,6 +1749,86 @@ Actions:
 
         return intelligence
 
+    def _save_prompt_to_file(self, user_message: str, memory_context: str):
+        """Save prompt to file for debugging"""
+        import os
+        from datetime import datetime
+        from pathlib import Path
+
+        # Create prompts directory
+        prompts_dir = Path("data/prompts")
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+        filename = prompts_dir / f"prompt_{timestamp}.txt"
+
+        # Get system instruction if available
+        system_instruction = ""
+        if hasattr(self.llm, 'config') and hasattr(self.llm.config, 'system_instruction'):
+            system_instruction = self.llm.config.system_instruction or ""
+
+        # Get conversation history
+        conversation_history = ""
+        if self.chat:
+            try:
+                # The chat is a GeminiChatSession wrapper, access the underlying gemini_chat
+                history = None
+                if hasattr(self.chat, 'gemini_chat') and hasattr(self.chat.gemini_chat, 'history'):
+                    history = self.chat.gemini_chat.history
+                elif hasattr(self.chat, 'history'):
+                    history = self.chat.history
+
+                if history:
+                    for i, msg in enumerate(history):
+                        role = getattr(msg, 'role', 'unknown')
+                        parts = getattr(msg, 'parts', [])
+
+                        conversation_history += f"\n--- Message {i+1} ({role}) ---\n"
+
+                        for part in parts:
+                            # Handle text parts
+                            if hasattr(part, 'text'):
+                                conversation_history += part.text + "\n"
+                            # Handle function calls
+                            elif hasattr(part, 'function_call'):
+                                fc = part.function_call
+                                conversation_history += f"[FUNCTION CALL: {fc.name}]\n"
+                                conversation_history += f"Arguments: {dict(fc.args)}\n"
+                            # Handle function responses
+                            elif hasattr(part, 'function_response'):
+                                fr = part.function_response
+                                conversation_history += f"[FUNCTION RESPONSE: {fr.name}]\n"
+                                conversation_history += f"Response: {dict(fr.response)}\n"
+            except Exception as e:
+                conversation_history = f"[Error reading history: {e}]"
+
+        # Write prompt to file
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write("="*80 + "\n")
+            f.write("SYSTEM INSTRUCTION\n")
+            f.write("="*80 + "\n")
+            f.write(system_instruction)
+            f.write("\n\n")
+            f.write("="*80 + "\n")
+            f.write("CONVERSATION HISTORY\n")
+            f.write("="*80 + "\n")
+            if conversation_history:
+                f.write(conversation_history)
+            else:
+                f.write("[No conversation history yet - first message]\n")
+            f.write("\n\n")
+            f.write("="*80 + "\n")
+            f.write("MEMORY CONTEXT\n")
+            f.write("="*80 + "\n")
+            f.write(memory_context)
+            f.write("\n\n")
+            f.write("="*80 + "\n")
+            f.write("USER MESSAGE (with enhancements)\n")
+            f.write("="*80 + "\n")
+            f.write(user_message)
+            f.write("\n")
+
     def _log_and_return_response(self, response: str) -> str:
         """Helper method to log assistant response and return it"""
         # SIMPLE LOGGING - Log orchestrator response
@@ -1759,16 +1837,11 @@ Actions:
 
     async def process_message(self, user_message: str) -> str:
         """Process a user message with orchestration"""
-
         # SIMPLE SESSION LOGGING - Log user message
         self.simple_logger.log_user_message(user_message)
 
         # Reset per-message token tracking
         self.last_message_tokens = {'prompt_tokens': 0, 'cached_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
-
-        # ===================================================================
-        # USER PREFERENCES & ANALYTICS TRACKING
-        # ===================================================================
 
         # Record user message for analytics
         self.analytics.record_user_message()
@@ -1780,151 +1853,25 @@ Actions:
         self.user_prefs.record_interaction_style(user_message)
 
         # ===================================================================
-        # CORRECTION DETECTION
+        # REMOVED: Classification and preprocessing logic
+        # Modern LLMs handle intent detection, corrections, instructions natively
         # ===================================================================
 
-        # Check for corrections first (before other processing)
-        is_correction = await self._detect_and_handle_correction(user_message)
-
-        # ===================================================================
-        # EPISODIC MEMORY RETRIEVAL
-        # ===================================================================
-
-        # Retrieve relevant episodic memory context
-        memory_context = await self._retrieve_memory_context(user_message)
-
-        # ===================================================================
-        # INTELLIGENT INSTRUCTION DETECTION
-        # ===================================================================
-
-        # Use intelligent instruction parser (LLM-powered semantic understanding)
-        instruction_confirmation = None
-        try:
-            parsed_instruction = await self.instruction_parser.parse(user_message)
-
-            if parsed_instruction.is_instruction and parsed_instruction.confidence >= 0.5:
-                # Apply specific instruction types
-                if parsed_instruction.category == 'timezone' and parsed_instruction.value:
-                    # Force consistent key for timezone instructions
-                    parsed_instruction.key = 'timezone'
-                    if set_user_timezone(parsed_instruction.value):
-                        if self.verbose:
-                            print(f"{C.CYAN}🕐 Global timezone set to: {parsed_instruction.value}{C.ENDC}")
-                        # Store in unified memory as core fact (NOT in instruction_memory to avoid duplication)
-                        if hasattr(self, 'unified_memory'):
-                            self.unified_memory.set_core_fact('timezone', parsed_instruction.value, 'preference', 'explicit')
-                        instruction_confirmation = f"🕐 Timezone set to {parsed_instruction.value}"
-                elif parsed_instruction.category == 'identity' and parsed_instruction.value:
-                    # Store identity information (name, role, etc.) in core_facts only
-                    if hasattr(self, 'unified_memory'):
-                        key = parsed_instruction.key or 'user_name'
-                        self.unified_memory.set_core_fact(key, parsed_instruction.value, 'identity', 'explicit')
-                        instruction_confirmation = f"👤 {key.replace('_', ' ').title()} set to {parsed_instruction.value}"
-                        if self.verbose:
-                            print(f"{C.CYAN}👤 Identity saved: {key} = {parsed_instruction.value}{C.ENDC}")
-                elif parsed_instruction.category == 'default' and parsed_instruction.key and parsed_instruction.value:
-                    # Store default values in core_facts only (NOT in instruction_memory)
-                    if hasattr(self, 'unified_memory'):
-                        self.unified_memory.set_core_fact(parsed_instruction.key, parsed_instruction.value, 'default', 'explicit')
-                        instruction_confirmation = f"📋 Default set: {parsed_instruction.key} = {parsed_instruction.value}"
-                        if self.verbose:
-                            print(f"{C.CYAN}📋 Default saved: {parsed_instruction.key} = {parsed_instruction.value}{C.ENDC}")
-                else:
-                    # Store in instruction memory ONLY for behavioral/workflow/formatting instructions
-                    self.instruction_memory.add(parsed_instruction)
-
-                    # Generate confirmation for other instruction types
-                    instruction_confirmation = (
-                        f"✓ Noted: {parsed_instruction.key} = {parsed_instruction.value}"
-                    )
-
-                if self.verbose:
-                    print(f"{C.GREEN}{instruction_confirmation}{C.ENDC}")
-
-        except Exception as e:
-            logger.warning(f"Instruction parsing error: {e}")
-            # Fall back to old regex method if intelligent parsing fails
-            instruction_confirmation = self._detect_and_store_explicit_instruction(user_message)
-
-        # Pattern-based fallback detection for miscategorized instructions
-        # This catches cases where the parser returns wrong category (e.g., 'default' instead of 'timezone')
-        import re
-
-        # Fallback timezone detection - always check for timezone patterns
-        # This catches cases where instruction parser miscategorizes timezone updates
-        if hasattr(self, 'unified_memory'):
-            # Look for timezone patterns in user message (always check, even if timezone exists)
-            tz_patterns = [
-                r'\b(?:use|set|switch to|change to)\s+(\w+)\s+(?:timezone|time\s*zone|from now|going forward)',
-                r'\b(IST|EST|PST|CST|MST|UTC|GMT|PDT|EDT|CDT|MDT)\b.*(?:from now|timezone|time)',
-                r'(?:timezone|time\s*zone).*\b(IST|EST|PST|CST|MST|UTC|GMT|PDT|EDT|CDT|MDT)\b',
-            ]
-            for pattern in tz_patterns:
-                match = re.search(pattern, user_message, re.IGNORECASE)
-                if match:
-                    detected_tz = match.group(1).upper()
-                    if detected_tz in ['IST', 'EST', 'PST', 'CST', 'MST', 'UTC', 'GMT', 'PDT', 'EDT', 'CDT', 'MDT']:
-                        current_tz = self.unified_memory.get_core_fact('timezone')
-                        # Only update if different from current or no current set
-                        if not current_tz or current_tz != detected_tz:
-                            if set_user_timezone(detected_tz):
-                                self.unified_memory.set_core_fact('timezone', detected_tz, 'preference', 'pattern_fallback')
-                                if self.verbose:
-                                    print(f"{C.CYAN}🕐 Timezone detected (fallback): {detected_tz}{C.ENDC}")
-                                if not instruction_confirmation:
-                                    instruction_confirmation = f"🕐 Timezone set to {detected_tz}"
-                        break
-
-        # Fallback name/identity detection
-        if hasattr(self, 'unified_memory'):
-            current_name = self.unified_memory.get_core_fact('user_name')
-            if not current_name:
-                # Look for name patterns in user message
-                name_patterns = [
-                    r"(?:my name is|i'm|i am|call me|name's)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-                    r"(?:this is|it's)\s+([A-Z][a-z]+)(?:\s+here)?",
-                ]
-                for pattern in name_patterns:
-                    match = re.search(pattern, user_message, re.IGNORECASE)
-                    if match:
-                        detected_name = match.group(1).strip().title()
-                        if len(detected_name) >= 2 and len(detected_name) <= 50:
-                            self.unified_memory.set_core_fact('user_name', detected_name, 'identity', 'pattern_fallback')
-                            if self.verbose:
-                                print(f"{C.CYAN}👤 Name detected (fallback): {detected_name}{C.ENDC}")
-                            if not instruction_confirmation:
-                                instruction_confirmation = f"👤 Name set to {detected_name}"
-                            break
-
-        # Fallback email detection
-        if hasattr(self, 'unified_memory'):
-            # Look for email patterns in user message
-            email_patterns = [
-                r"(?:my email is|my mail is|email me at|mail me at|reach me at)\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
-                r"(?:email|mail)\s+(?:is\s+)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
-            ]
-            for pattern in email_patterns:
-                match = re.search(pattern, user_message, re.IGNORECASE)
-                if match:
-                    detected_email = match.group(1).strip().lower()
-                    self.unified_memory.set_core_fact('user_email', detected_email, 'identity', 'pattern_fallback')
-                    if self.verbose:
-                        print(f"{C.CYAN}📧 Email detected (fallback): {detected_email}{C.ENDC}")
-                    if not instruction_confirmation:
-                        instruction_confirmation = f"📧 Email set to {detected_email}"
-                    break
-
-        # ===================================================================
-
-        # Initialize on first message
+        # Initialize chat session on first message
         if not self.chat:
             # Only discover agents if not already loaded (main.py may have loaded them)
             if not self.sub_agents:
                 discover_task = asyncio.create_task(self.discover_and_load_agents())
                 await self._spinner(discover_task, "Discovering agents")
 
+            # Initialize and register memory agent
+            await self._initialize_memory_agent()
+
             if not self.sub_agents:
                 return self._log_and_return_response("No agents available. Please add agent connectors to the 'connectors' directory.")
+
+            # Load user context (core facts) - essential for LLM
+            memory_context = self.unified_memory.get_always_context() if hasattr(self, 'unified_memory') else ""
 
             # Create model with agent tools using LLM abstraction
             agent_tools = self._create_agent_tools()
@@ -1949,72 +1896,19 @@ Actions:
             'user_message': user_message,
             'agents_used': [],
             'responses': [],
-            'intent': '',
+            'intent': 'unknown',
             'entities': []
         }
 
-        # Process with Hybrid Intelligence System v5.0 (async)
-        intelligence = await self._process_with_intelligence(user_message)
-
-        # Update turn data with intelligence results
-        self._current_turn_data['intent'] = self._current_intent_type if hasattr(self, '_current_intent_type') else ''
-        self._current_turn_data['entities'] = [
-            {'type': str(getattr(e, 'type', 'unknown').value) if hasattr(getattr(e, 'type', None), 'value') else str(getattr(e, 'type', 'unknown')),
-             'value': str(getattr(e, 'value', str(e)))}
-            for e in intelligence.get('entities', [])
-        ]
-
-        # Store current intent for agent usage tracking
-        primary_intent = intelligence.get('primary_intent')
-        if primary_intent and hasattr(primary_intent, 'type'):
-            self._current_intent_type = str(primary_intent.type.value) if hasattr(primary_intent.type, 'value') else str(primary_intent.type)
-        else:
-            self._current_intent_type = 'unknown'
-
-        # Use resolved message if references were resolved
-        message_to_send = intelligence.get('resolved_message', user_message)
-
-        # Add agent preference hints based on learned patterns
-        if self._current_intent_type and self._current_intent_type != 'unknown':
-            preferred_agent = self.user_prefs.get_preferred_agent(self._current_intent_type)
-            if preferred_agent:
-                message_to_send += f"\n\n[User Preference: For {self._current_intent_type} tasks, this user typically prefers using the {preferred_agent} agent]"
-                if self.verbose:
-                    print(f"{C.CYAN}📊 User prefers {preferred_agent} for {self._current_intent_type} tasks{C.ENDC}")
-
-        # Add explicit instructions to message for immediate application
-        # This ensures instructions apply to the current message even if stored mid-session
-        active_instructions = self.user_prefs.get_explicit_instructions()
-        if active_instructions:
-            instruction_hints = []
-            for inst in active_instructions:
-                instruction_hints.append(f"{inst.key}: {inst.value}")
-            if instruction_hints:
-                message_to_send += f"\n\n[User's Explicit Instructions: {'; '.join(instruction_hints)}]"
-                if self.verbose:
-                    print(f"{C.CYAN}📝 Applying {len(active_instructions)} explicit instruction(s){C.ENDC}")
+        # Prepare message for LLM
+        message_to_send = user_message
 
         # Add current datetime to each message (ensures time is always accurate)
-        # This overrides the stale datetime in system prompt
         current_time_context = format_datetime_for_instruction()
         message_to_send += f"\n\n{current_time_context}"
 
-        # Check confidence and handle accordingly
-        action, explanation = intelligence['action_recommendation']
-
-        if action == 'clarify' and not self.verbose:
-            # Low confidence - ask clarifying questions
-            clarifications = self.confidence_scorer.suggest_clarifications(
-                intelligence['confidence'],
-                intelligence['intents']
-            )
-            if clarifications:
-                self.ui.print_response("\n".join(clarifications[:2]))
-                return self._log_and_return_response("I need more information to proceed. " + clarifications[0])
-
-        # Log intelligence insights
-        if self.verbose:
-            print(f"{C.CYAN}📊 Using intelligence: {explanation}{C.ENDC}")
+        # Save prompt to file for debugging
+        self._save_prompt_to_file(message_to_send, "")
 
         # Create and run the initial send task with a spinner
         send_task = asyncio.create_task(self.chat.send_message(message_to_send))
@@ -2067,66 +1961,7 @@ Actions:
             # Convert protobuf args to dict
             args = self._deep_convert_proto_args(function_call.args)
 
-            # Handle update_user_fact tool (not an agent call)
-            if tool_name == "update_user_fact":
-                if self.verbose:
-                    print(f"{C.CYAN}🔧 update_user_fact tool called{C.ENDC}")
-
-                action = args.get("action", "add")
-                key = args.get("key", "")
-                value = args.get("value", "")
-                category = args.get("category", "identity")
-
-                try:
-                    if action == "add":
-                        if not key or not value:
-                            result = "Error: Both 'key' and 'value' are required for add action"
-                        else:
-                            self.unified_memory.set_core_fact(
-                                key=key,
-                                value=value,
-                                category=category,
-                                source="user"
-                            )
-                            result = f"Saved: {key} = {value}"
-                            if self.verbose:
-                                print(f"{C.GREEN}✓ Stored fact: {key} = {value}{C.ENDC}")
-                    elif action == "remove":
-                        if not key:
-                            result = "Error: 'key' is required for remove action"
-                        else:
-                            removed = self.unified_memory.remove_core_fact(key)
-                            result = f"Removed: {key}" if removed else f"Fact '{key}' not found"
-                            if self.verbose:
-                                print(f"{C.GREEN}✓ Removed fact: {key}{C.ENDC}" if removed else f"{C.YELLOW}⚠ Fact not found: {key}{C.ENDC}")
-                    else:
-                        result = f"Error: Unknown action '{action}'. Use 'add' or 'remove'"
-
-                except Exception as e:
-                    result = f"Error updating fact: {str(e)}"
-                    if self.verbose:
-                        print(f"{C.RED}✗ {result}{C.ENDC}")
-
-                # Send function response back to LLM using the same pattern as agent calls
-                function_result = {
-                    'name': tool_name,
-                    'result': result
-                }
-
-                response_task = asyncio.create_task(
-                    self.chat.send_message_with_functions("", function_result)
-                )
-                await self._spinner(response_task, "Saving user info")
-                llm_response = response_task.result()
-
-                # Track token usage
-                self._track_tokens(llm_response)
-
-                # Get raw response for next iteration
-                response = llm_response.metadata.get('response_object') if llm_response.metadata else None
-                iteration += 1
-                continue
-
+            # All tools are now agent calls (including memory agent)
             instruction = args.get("instruction", "")
             context = args.get("context", "") # This will be a dict/list if passed by LLM
 
@@ -2265,21 +2100,21 @@ Actions:
 
                 # Add duplicate/stuck operation warning
                 if is_duplicate and dup_explanation:
-                    result += f"\n\n⚠️ **DUPLICATE OPERATION DETECTED**\n{dup_explanation}"
+                    result += f"\n\n**WARNING: DUPLICATE OPERATION DETECTED**\n{dup_explanation}"
                     result += f"\n\nThis operation appears stuck. It will NOT be retried further."
                     # Force stop retrying for duplicate operations
                     error_classification.is_retryable = False
 
                 # Add inconsistent response warning
                 if is_inconsistent and dup_pattern:
-                    result += f"\n\n⚠️ **INCONSISTENT RESPONSES DETECTED**\n"
+                    result += f"\n\n**WARNING: INCONSISTENT RESPONSES DETECTED**\n"
                     result += f"Response pattern: {' → '.join(dup_pattern[-5:])}\n"
                     result += f"The agent is giving conflicting results. Please verify manually."
 
                 # Add context-specific guidance
                 if not error_classification.is_retryable and attempt_num == 1:
                     # Non-retryable error on first attempt - explain clearly
-                    result += f"\n\n⚠️ **This operation will not be retried** because it's a {error_classification.category.value} error."
+                    result += f"\n\n**WARNING: This operation will not be retried** because it's a {error_classification.category.value} error."
 
                 if error_classification.is_retryable and retry_ctx:
                     # Show retry info for retryable errors
@@ -2355,19 +2190,6 @@ Actions:
         if not final_response:
             final_response = "Task completed but response formatting failed. The operations were executed successfully."
 
-        # Prepend instruction confirmation if we stored a new instruction
-        if instruction_confirmation:
-            final_response = f"{instruction_confirmation}\n\n{final_response}"
-
-        # ===================================================================
-        # EPISODIC MEMORY STORAGE
-        # ===================================================================
-
-        # Store this interaction as episodic memory
-        # ===================================================================
-        # UNIFIED MEMORY STORAGE
-        # ===================================================================
-
         # Store interaction in unified memory (handles everything)
         await self._store_in_memory(
             user_message=user_message,
@@ -2375,12 +2197,6 @@ Actions:
             agents_used=self._current_turn_data['agents_used'],
             intent_type=self._current_turn_data.get('intent', 'unknown')
         )
-
-        # Reinforce preferences if this wasn't a correction (implicit acceptance)
-        if not is_correction:
-            # Get recently used preference keys and reinforce them
-            for key in list(self.user_prefs.instruction_memory.instructions.keys())[:5]:
-                self.user_prefs.reinforce_preference(key, boost=0.05)
 
         return self._log_and_return_response(final_response)
 
@@ -2685,7 +2501,7 @@ Actions:
                     if not self.verbose:
                         self.ui.print_goodbye()
                     else:
-                        print(f"\n{C.GREEN}Goodbye! 👋{C.ENDC}")
+                        print(f"\n{C.GREEN}Goodbye!{C.ENDC}")
                     break
 
                 if not user_input:
